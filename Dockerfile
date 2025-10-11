@@ -1,17 +1,17 @@
-# Sử dụng Python gọn nhẹ
+# Base Python nhẹ nhất có hỗ trợ pip
 FROM python:3.10-slim
 
-# Thư mục làm việc
+# Đặt thư mục làm việc
 WORKDIR /app
 
-# Sao chép file code
+# Copy toàn bộ mã nguồn
 COPY . .
 
-# Cài thư viện cần thiết
+# Cài thư viện
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Mở port giả (Render yêu cầu)
 EXPOSE 10000
 
-# Giữ bot sống bằng cách mở server giả + chạy bot song song
+# Giữ bot sống bằng cách chạy web server + bot song song
 CMD ["sh", "-c", "python bot.py & python -m http.server 10000"]
