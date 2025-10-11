@@ -28,9 +28,10 @@ def random_str(n=6):
     return ''.join(random.choices(string.ascii_lowercase + string.digits, k=n))
 
 def safe_filename(name):
+    # ⚙️ Giữ nguyên dấu "_" và khoảng trắng, chỉ thay ký tự đặc biệt khác
+    name = name.replace(" ", "_")
     name = re.sub(r'[^A-Za-z0-9._-]', '_', name)
-    name = name.replace('__', '_').strip('_')
-    return name
+    return name.strip('_')
 
 # -----------------------------
 # 🔹 TẢI FILE CÓ TIẾN TRÌNH %
