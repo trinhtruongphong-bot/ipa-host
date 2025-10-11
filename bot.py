@@ -19,19 +19,13 @@ from telegram.ext import ApplicationBuilder, MessageHandler, CommandHandler, fil
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 REPO = os.getenv("GITHUB_REPO")
-CUSTOM_DOMAIN = "download.khoindvn.io.vn"  # domain của bạn
+CUSTOM_DOMAIN = "download.khoindvn.io.vn"
 
 # -----------------------------
 # 🔹 HÀM PHỤ
 # -----------------------------
 def random_str(n=6):
     return ''.join(random.choices(string.ascii_lowercase + string.digits, k=n))
-
-def safe_filename(name):
-    # ⚙️ Giữ nguyên dấu "_" và khoảng trắng, chỉ thay ký tự đặc biệt khác
-    name = name.replace(" ", "_")
-    name = re.sub(r'[^A-Za-z0-9._-]', '_', name)
-    return name.strip('_')
 
 # -----------------------------
 # 🔹 TẢI FILE CÓ TIẾN TRÌNH %
@@ -64,9 +58,8 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("📦 Gửi file `.ipa` để upload.")
         return
 
-    file_name = file.file_name
     total_size = file.file_size
-    msg = await update.message.reply_text(f"📦 Đã nhận file `{file_name}`, đang xử lý...", parse_mode="Markdown")
+    msg = await update.message.reply_text(f"📦 Đã nhận file `{file.file_name}`, đang xử lý...", parse_mode="Markdown")
 
     getfile = requests.get(f"https://api.telegram.org/bot{BOT_TOKEN}/getFile", params={"file_id": file.file_id}).json()
     file_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{getfile['result']['file_path']}"
@@ -76,11 +69,11 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await msg.edit_text("📤 Đang upload lên GitHub...")
 
+    # Đọc Info.plist trong IPA
     app_name = "Unknown"
     bundle_id = "unknown.bundle"
     version = "1.0.0"
     team_name = "Unknown"
-
     try:
         with zipfile.ZipFile(io.BytesIO(ipa_bytes)) as ipa:
             for name in ipa.namelist():
@@ -96,27 +89,29 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text(f"⚠️ Lỗi đọc Info.plist: {e}")
         return
 
-    timestamp = time.strftime("%Y%m%d_%H%M%S")
-    safe_name = safe_filename(app_name)
-    unique_ipa_name = f"{safe_name}_{version}_{timestamp}.ipa"
-    ipa_path = f"IPA/{unique_ipa_name}"
+    # 🔹 Random tên file
+    tag = random_str(6)
+    ipa_name = f"{tag}.ipa"
+    plist_name = f"{tag}.plist"
 
-    encoded_ipa = base64.b64encode(ipa_bytes).decode("utf-8")
+    # Upload IPA lên GitHub
+    ipa_path = f"IPA/{ipa_name}"
     github_api = f"https://api.github.com/repos/{REPO}/contents/{ipa_path}"
+    encoded_ipa = base64.b64encode(ipa_bytes).decode("utf-8")
+
     up = requests.put(
         github_api,
         headers={"Authorization": f"token {GITHUB_TOKEN}"},
-        json={"message": f"Upload {unique_ipa_name}", "content": encoded_ipa}
+        json={"message": f"Upload {ipa_name}", "content": encoded_ipa}
     )
-
     if up.status_code not in (200, 201):
         await msg.edit_text(f"❌ Upload IPA lỗi:\n{up.text[:400]}")
         return
 
     raw_ipa_url = f"https://{CUSTOM_DOMAIN}/{ipa_path}"
 
-    # 🧾 Tạo .plist
-    plist_random = f"manifest_{random_str(6)}.plist"
+    # 🧾 Tạo file plist
+    plist_path = f"Plist/{plist_name}"
     plist_content = f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -144,22 +139,18 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
 </plist>"""
 
     encoded_plist = base64.b64encode(plist_content.encode()).decode("utf-8")
-    plist_path = f"Plist/{plist_random}"
     plist_api = f"https://api.github.com/repos/{REPO}/contents/{plist_path}"
     requests.put(
         plist_api,
         headers={"Authorization": f"token {GITHUB_TOKEN}"},
-        json={"message": f"Add manifest {plist_random}", "content": encoded_plist}
+        json={"message": f"Add manifest {plist_name}", "content": encoded_plist}
     )
 
     raw_plist_url = f"https://{CUSTOM_DOMAIN}/{plist_path}"
     encoded_url = urllib.parse.quote(raw_plist_url, safe="")
     itms = f"itms-services://?action=download-manifest&url={encoded_url}"
 
-    try:
-        short = requests.get("https://is.gd/create.php", params={"format": "simple", "url": itms}).text.strip()
-    except:
-        short = itms
+    short = requests.get("https://is.gd/create.php", params={"format": "simple", "url": itms}).text.strip()
 
     reply = (
         f"✅ **Upload thành công!**\n\n"
@@ -174,26 +165,21 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await msg.edit_text(reply, parse_mode="Markdown", disable_web_page_preview=True)
 
 # -----------------------------
-# 🔹 LỆNH CƠ BẢN
+# 🔹 LỆNH KHÁC
 # -----------------------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "👋 Xin chào!\n\nGửi file `.ipa` để upload và tạo link cài đặt trực tiếp.\n\nGõ /help để xem thêm lệnh."
-    )
+    await update.message.reply_text("👋 Gửi file `.ipa` để upload và tạo link cài đặt trực tiếp.\nGõ /help để xem lệnh hỗ trợ.")
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "📘 **Lệnh hỗ trợ:**\n\n"
-        "/listipa – Liệt kê danh sách file IPA\n"
-        "/listplist – Liệt kê danh sách file Plist\n"
-        "/deleteipa <tên_file.ipa> – Xoá file IPA\n"
-        "/deleteplist <tên_file.plist> – Xoá file Plist\n",
+        "/listipa – Danh sách file IPA\n"
+        "/listplist – Danh sách file Plist\n"
+        "/deleteipa <tên_file>\n"
+        "/deleteplist <tên_file>",
         parse_mode="Markdown"
     )
 
-# -----------------------------
-# 🔹 DANH SÁCH FILE
-# -----------------------------
 async def list_ipa(update: Update, context: ContextTypes.DEFAULT_TYPE):
     url = f"https://api.github.com/repos/{REPO}/contents/IPA"
     headers = {"Authorization": f"token {GITHUB_TOKEN}"}
@@ -204,11 +190,11 @@ async def list_ipa(update: Update, context: ContextTypes.DEFAULT_TYPE):
     files = [f['name'] for f in r.json() if f['name'].endswith('.ipa')]
     if not files:
         await update.message.reply_text("📭 Chưa có file IPA nào.")
-    else:
-        text = "📦 **Danh sách file IPA:**\n\n"
-        for f in files:
-            text += f"- `{f}`\n🔗 https://{CUSTOM_DOMAIN}/IPA/{f}\n\n"
-        await update.message.reply_text(text, parse_mode="Markdown")
+        return
+    text = "📦 **Danh sách file IPA:**\n\n"
+    for f in files:
+        text += f"- `{f}`\n🔗 https://{CUSTOM_DOMAIN}/IPA/{f}\n\n"
+    await update.message.reply_text(text, parse_mode="Markdown")
 
 async def list_plist(update: Update, context: ContextTypes.DEFAULT_TYPE):
     url = f"https://api.github.com/repos/{REPO}/contents/Plist"
@@ -220,15 +206,12 @@ async def list_plist(update: Update, context: ContextTypes.DEFAULT_TYPE):
     files = [f['name'] for f in r.json() if f['name'].endswith('.plist')]
     if not files:
         await update.message.reply_text("📭 Chưa có file Plist nào.")
-    else:
-        text = "🧾 **Danh sách file Plist:**\n\n"
-        for f in files:
-            text += f"- `{f}`\n🔗 https://{CUSTOM_DOMAIN}/Plist/{f}\n\n"
-        await update.message.reply_text(text, parse_mode="Markdown")
+        return
+    text = "🧾 **Danh sách file Plist:**\n\n"
+    for f in files:
+        text += f"- `{f}`\n🔗 https://{CUSTOM_DOMAIN}/Plist/{f}\n\n"
+    await update.message.reply_text(text, parse_mode="Markdown")
 
-# -----------------------------
-# 🔹 XOÁ FILE
-# -----------------------------
 async def delete_ipa(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         await update.message.reply_text("❗ Dùng: `/deleteipa <tên_file.ipa>`", parse_mode="Markdown")
@@ -241,11 +224,8 @@ async def delete_ipa(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚠️ Không tìm thấy file IPA đó.")
         return
     sha = r.json()["sha"]
-    d = requests.delete(url, headers=headers, json={"message": f"Delete {name}", "sha": sha})
-    if d.status_code in (200, 204):
-        await update.message.reply_text(f"🗑️ Đã xoá `{name}`", parse_mode="Markdown")
-    else:
-        await update.message.reply_text("❌ Lỗi khi xoá.")
+    requests.delete(url, headers=headers, json={"message": f"Delete {name}", "sha": sha})
+    await update.message.reply_text(f"🗑️ Đã xoá `{name}`", parse_mode="Markdown")
 
 async def delete_plist(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
@@ -259,37 +239,33 @@ async def delete_plist(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚠️ Không tìm thấy file Plist đó.")
         return
     sha = r.json()["sha"]
-    d = requests.delete(url, headers=headers, json={"message": f"Delete {name}", "sha": sha})
-    if d.status_code in (200, 204):
-        await update.message.reply_text(f"🗑️ Đã xoá `{name}`", parse_mode="Markdown")
-    else:
-        await update.message.reply_text("❌ Lỗi khi xoá.")
+    requests.delete(url, headers=headers, json={"message": f"Delete {name}", "sha": sha})
+    await update.message.reply_text(f"🗑️ Đã xoá `{name}`", parse_mode="Markdown")
 
 # -----------------------------
-# 🔹 KEEP BOT ALIVE
+# 🔹 KEEP ALIVE
 # -----------------------------
 def keep_alive():
     port = 10000
     handler = http.server.SimpleHTTPRequestHandler
     with socketserver.TCPServer(("", port), handler) as httpd:
-        print(f"🌐 Keep-alive server running on port {port}")
+        print(f"🌐 Keep-alive server chạy trên cổng {port}")
         httpd.serve_forever()
 
 def self_ping():
     while True:
         try:
             requests.get(f"https://{CUSTOM_DOMAIN}")
-        except Exception as e:
-            print(f"Ping lỗi: {e}")
+        except:
+            pass
         time.sleep(50)
 
 # -----------------------------
-# 🔹 CHẠY BOT
+# 🔹 RUN BOT
 # -----------------------------
 if __name__ == "__main__":
     print("🤖 Bot đang khởi động...")
     app = ApplicationBuilder().token(BOT_TOKEN).build()
-
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("listipa", list_ipa))
@@ -297,9 +273,7 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("deleteipa", delete_ipa))
     app.add_handler(CommandHandler("deleteplist", delete_plist))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_file))
-
     threading.Thread(target=keep_alive, daemon=True).start()
     threading.Thread(target=self_ping, daemon=True).start()
-
     print("🚀 Bot đang hoạt động & giữ kết nối 24/7!")
     app.run_polling()
