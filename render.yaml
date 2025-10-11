@@ -1,0 +1,14 @@
+services:
+  - type: worker                     # 🔹 Chạy nền (Telegram bot)
+    name: ipa-bot-worker             # Tên service của bạn
+    env: docker                      # Sử dụng Dockerfile trong repo
+    region: singapore                # Có thể đổi nếu muốn gần hơn
+    plan: free                       # Hoặc starter nếu file > 500MB
+    autoDeploy: true
+    envVars:                         # ⚙️ Biến môi trường
+      - key: BOT_TOKEN
+        sync: false                  # Nhập trong Render sau
+      - key: GITHUB_TOKEN
+        sync: false
+      - key: GITHUB_REPO
+        value: trinhtruongphong-bot/ipa-host
