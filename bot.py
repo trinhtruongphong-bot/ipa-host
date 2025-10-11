@@ -16,7 +16,11 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 REPO = os.getenv("GITHUB_REPO")
 
-CUSTOM_DOMAIN = "download.khoindvn.io.vn"  # 🌐 domain riêng
+CUSTOM_DOMAIN = "download.khoindvn.io.vn"  # 🌐 Domain riêng của bạn
+
+# ----------------------------
+# 🔹 HÀM HỖ TRỢ
+# ----------------------------
 
 def random_str(n=6):
     return ''.join(random.choices(string.ascii_lowercase + string.digits, k=n))
@@ -38,7 +42,10 @@ def delete_github_file(path: str):
     else:
         return f"⚠️ Lỗi khi xoá: {del_req.text[:200]}"
 
-# 📦 Xử lý IPA upload
+# ----------------------------
+# 🔹 XỬ LÝ FILE IPA
+# ----------------------------
+
 async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.effective_message
     if not msg.document or not msg.document.file_name.endswith(".ipa"):
@@ -98,7 +105,7 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Link IPA qua domain riêng
     raw_ipa_url = f"https://{CUSTOM_DOMAIN}/{ipa_path}"
 
-    # Tạo .plist trong thư mục Plist/
+    # Tạo .plist
     plist_random = f"manifest_{random_str(6)}.plist"
     plist_content = f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -156,54 +163,46 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await msg.reply_text(reply, parse_mode="Markdown", disable_web_page_preview=True)
 
-# Các lệnh quản lý
-async def delete_ipa(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args:
-        await update.message.reply_text("⚙️ Dùng lệnh: `/deleteipa <tên_file.ipa>`", parse_mode="Markdown")
-        return
-    result = delete_github_file(f"IPA/{context.args[0]}")
-    await update.message.reply_text(result, parse_mode="Markdown")
+# ----------------------------
+# 🔹 LỆNH /START & /HELP
+# ----------------------------
 
-async def delete_plist(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args:
-        await update.message.reply_text("⚙️ Dùng lệnh: `/deleteplist <tên_file.plist>`", parse_mode="Markdown")
-        return
-    result = delete_github_file(f"Plist/{context.args[0]}")
-    await update.message.reply_text(result, parse_mode="Markdown")
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = (
+        "👋 **Xin chào!**\n\n"
+        "Mình là **IPA Upload Bot** – giúp bạn upload file `.ipa` lên GitHub "
+        "và tạo **link cài đặt trực tiếp iOS (itms-services)**.\n\n"
+        "📦 Gửi file `.ipa` để bắt đầu.\n\n"
+        "👉 Gõ `/help` để xem hướng dẫn chi tiết."
+    )
+    await update.message.reply_text(text, parse_mode="Markdown", disable_web_page_preview=True)
 
-async def list_ipa(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user, repo_name = REPO.split("/")
-    resp = requests.get(f"https://api.github.com/repos/{user}/{repo_name}/contents/IPA", headers={"Authorization": f"token {GITHUB_TOKEN}"})
-    if resp.status_code != 200:
-        await update.message.reply_text("⚠️ Không thể lấy danh sách IPA.")
-        return
-    files = resp.json()
-    if not files:
-        await update.message.reply_text("📂 Chưa có file `.ipa` nào.")
-        return
-    reply = "📦 **Danh sách IPA:**\n" + "\n".join([f"▫️ `{f['name']}` ({round(f['size']/1048576,2)} MB)" for f in files])
-    await update.message.reply_text(reply, parse_mode="Markdown")
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = (
+        "🧭 **Hướng dẫn sử dụng**\n\n"
+        "📤 **Gửi file .ipa:** Bot sẽ tự upload & tạo link cài đặt.\n\n"
+        "💡 **Các lệnh:**\n"
+        "`/listipa` – Danh sách file IPA\n"
+        "`/listplist` – Danh sách file manifest (.plist)\n"
+        "`/deleteipa <tên_file>` – Xoá file IPA\n"
+        "`/deleteplist <tên_file>` – Xoá file Plist\n"
+        "`/getlink <tên_file>` – Tạo lại link cài đặt từ IPA cũ\n\n"
+        "🌐 **Trang tải:** https://download.khoindvn.io.vn\n"
+        "👨‍💻 Developer: Khoindvn"
+    )
+    await update.message.reply_text(text, parse_mode="Markdown", disable_web_page_preview=True)
 
-async def list_plist(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user, repo_name = REPO.split("/")
-    resp = requests.get(f"https://api.github.com/repos/{user}/{repo_name}/contents/Plist", headers={"Authorization": f"token {GITHUB_TOKEN}"})
-    if resp.status_code != 200:
-        await update.message.reply_text("⚠️ Không thể lấy danh sách Plist.")
-        return
-    files = resp.json()
-    if not files:
-        await update.message.reply_text("📂 Chưa có file `.plist` nào.")
-        return
-    reply = "🧾 **Danh sách Plist:**\n" + "\n".join([f"▫️ `{f['name']}` ({round(f['size']/1024,1)} KB)" for f in files])
-    await update.message.reply_text(reply, parse_mode="Markdown")
+# ----------------------------
+# 🔹 KHỞI ĐỘNG BOT
+# ----------------------------
 
-# Khởi động bot
 if __name__ == "__main__":
     print("🤖 Bot đang chạy...")
     app = ApplicationBuilder().token(BOT_TOKEN).build()
+
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("help", help_command))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_file))
-    app.add_handler(CommandHandler("deleteipa", delete_ipa))
-    app.add_handler(CommandHandler("deleteplist", delete_plist))
-    app.add_handler(CommandHandler("listipa", list_ipa))
-    app.add_handler(CommandHandler("listplist", list_plist))
+    app.add_handler(CommandHandler("deleteipa", delete_github_file))
+    app.add_handler(CommandHandler("deleteplist", delete_github_file))
     app.run_polling()
