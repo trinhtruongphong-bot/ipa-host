@@ -5,14 +5,12 @@ from telegram.ext import (
     ApplicationBuilder, CommandHandler, MessageHandler,
     CallbackQueryHandler, ContextTypes, filters
 )
-from aiohttp import web
 
 # ========== CONFIG ==========
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 GITHUB_REPO = "trinhtruongphong-bot/ipa-host"
+GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 DOMAIN = "https://download.khoindvn.io.vn"
-APP_URL = "https://ipa-host-dkoq.onrender.com"  # domain Render của bạn
 
 IPA_PATH = "IPA"
 PLIST_PATH = "Plist"
@@ -22,7 +20,6 @@ def random_name(n=6):
     return ''.join(random.choices(string.ascii_lowercase + string.digits, k=n))
 
 def extract_info_from_ipa(ipa_bytes):
-    """Đọc Info.plist chuẩn 100% từ IPA"""
     try:
         with zipfile.ZipFile(BytesIO(ipa_bytes)) as ipa:
             for name in ipa.namelist():
@@ -72,57 +69,70 @@ def shorten(url):
     except:
         return url
 
-async def auto_delete(context, chat_id, msg_id, delay=30):
+async def auto_delete(context, chat_id, message_id, delay=30):
     await asyncio.sleep(delay)
     try:
-        await context.bot.delete_message(chat_id=chat_id, message_id=msg_id)
+        await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
     except:
         pass
 
 # ========== COMMANDS ==========
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = await update.message.reply_text("👋 Xin chào!\nGửi file `.ipa` để upload và tạo link cài đặt iOS.")
+    msg = await update.message.reply_text(
+        "👋 Xin chào!\nGửi file `.ipa` để upload và tạo link cài đặt trực tiếp iOS.\nGõ /help để xem hướng dẫn chi tiết."
+    )
     context.application.create_task(auto_delete(context, msg.chat_id, msg.message_id))
 
-async def help(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = await update.message.reply_text("🧭 /listipa – danh sách IPA\n/listplist – danh sách Plist\n/help – hướng dẫn")
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = await update.message.reply_text(
+        "🧭 Lệnh khả dụng:\n"
+        "/listipa – Danh sách IPA (có nút xoá)\n"
+        "/listplist – Danh sách Plist (có nút xoá)\n"
+        "/help – Xem hướng dẫn\n\n"
+        "📤 Gửi file `.ipa` để upload!"
+    )
     context.application.create_task(auto_delete(context, msg.chat_id, msg.message_id))
 
-async def list_files(update: Update, context: ContextTypes.DEFAULT_TYPE, path, label):
+async def list_files(update: Update, context: ContextTypes.DEFAULT_TYPE, path, filetype):
     files = github_list(path)
     if not files:
-        msg = await update.message.reply_text(f"📂 Không có file {label}.")
+        msg = await update.message.reply_text(f"📂 Không có file {filetype}.")
         context.application.create_task(auto_delete(context, msg.chat_id, msg.message_id))
         return
     keyboard = []
     for f in files:
         keyboard.append([InlineKeyboardButton(f"{f} 🗑️", callback_data=f"delete|{path}|{f}")])
-    msg = await update.message.reply_text(f"📦 Danh sách {label}:", reply_markup=InlineKeyboardMarkup(keyboard))
+    msg = await update.message.reply_text(f"📦 Danh sách {filetype}:", reply_markup=InlineKeyboardMarkup(keyboard))
     context.application.create_task(auto_delete(context, msg.chat_id, msg.message_id))
 
-async def listipa(update, context): await list_files(update, context, "IPA", "IPA")
-async def listplist(update, context): await list_files(update, context, "Plist", "Plist")
+async def list_ipa(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await list_files(update, context, IPA_PATH, "IPA")
+
+async def list_plist(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await list_files(update, context, PLIST_PATH, "Plist")
 
 async def handle_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     _, path, filename = query.data.split("|")
     ok = github_delete(f"{path}/{filename}")
-    await query.edit_message_text(f"✅ Đã xoá {filename}" if ok else f"❌ Không thể xoá {filename}")
+    await query.edit_message_text(
+        f"✅ Đã xoá `{filename}` khỏi `{path}/`" if ok else f"❌ Không thể xoá `{filename}`",
+        parse_mode="Markdown"
+    )
 
 # ========== UPLOAD ==========
 async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     doc = update.message.document
     if not doc.file_name.endswith(".ipa"):
-        msg = await update.message.reply_text("⚠️ Vui lòng gửi file `.ipa`!")
+        msg = await update.message.reply_text("⚠️ Vui lòng gửi file `.ipa` hợp lệ!")
         context.application.create_task(auto_delete(context, msg.chat_id, msg.message_id))
         return
 
     msg = await update.message.reply_text("📤 Đang nhận file IPA...")
     file = await doc.get_file()
-
     total_size = doc.file_size
-    chunk_size = 1024 * 512  # 512KB mỗi chunk
+    chunk_size = 1024 * 512  # 512KB
     downloaded = 0
     buffer = BytesIO()
 
@@ -132,7 +142,7 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         percent = int(downloaded / total_size * 100)
         if percent % 10 == 0:
             try:
-                await msg.edit_text(f"⬆️ Tiến độ upload: {percent}%")
+                await msg.edit_text(f"⬆️ Tiến độ tải: {percent}%")
             except:
                 pass
 
@@ -140,9 +150,9 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await msg.edit_text("✅ Đã tải xong, đang upload lên GitHub...")
 
     info = extract_info_from_ipa(ipa_bytes)
-    rand = ''.join(random.choices(string.ascii_lowercase + string.digits, k=6))
-    ipa_file = f"IPA/{rand}.ipa"
-    plist_file = f"Plist/{rand}.plist"
+    rand = random_name()
+    ipa_file = f"{IPA_PATH}/{rand}.ipa"
+    plist_file = f"{PLIST_PATH}/{rand}.plist"
 
     github_upload(ipa_file, ipa_bytes)
     ipa_url = f"{DOMAIN}/{ipa_file}"
@@ -163,41 +173,38 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await asyncio.sleep(30)
     install_link = f"itms-services://?action=download-manifest&url={plist_url}"
-    short = shorten(install_link)
+    short_link = shorten(install_link)
 
     await msg.edit_text(
         f"✅ **Upload thành công!**\n\n"
-        f"📱 Tên: {info['name']}\n🆔 {info['bundle']}\n🔢 {info['version']}\n"
-        f"📦 [Tải IPA]({ipa_url})\n📲 [Cài trực tiếp (rút gọn)]({short})",
+        f"📱 **Tên ứng dụng:** {info['name']}\n"
+        f"🆔 **Bundle ID:** {info['bundle']}\n"
+        f"🔢 **Phiên bản:** {info['version']}\n"
+        f"👥 **Team ID:** {info['team']}\n\n"
+        f"📦 **Tải IPA:** {ipa_url}\n"
+        f"📲 **Cài đặt trực tiếp (rút gọn):** {short_link}",
         parse_mode="Markdown"
     )
 
+# ========== KEEP ALIVE ==========
+def keep_alive():
+    while True:
+        try:
+            requests.get(DOMAIN)
+        except:
+            pass
+        time.sleep(50)
+
 # ========== MAIN ==========
-async def main():
+if __name__ == "__main__":
+    import threading
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("help", help))
-    app.add_handler(CommandHandler("listipa", listipa))
-    app.add_handler(CommandHandler("listplist", listplist))
+    app.add_handler(CommandHandler("help", help_command))
+    app.add_handler(CommandHandler("listipa", list_ipa))
+    app.add_handler(CommandHandler("listplist", list_plist))
     app.add_handler(CallbackQueryHandler(handle_delete))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_file))
-
-    async def webhook(request):
-        data = await request.json()
-        await app.update_queue.put(Update.de_json(data, app.bot))
-        return web.Response()
-
-    webapp = web.Application()
-    webapp.router.add_post(f"/{BOT_TOKEN}", webhook)
-    runner = web.AppRunner(webapp)
-    await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", 10000)
-    await site.start()
-
-    webhook_url = f"{APP_URL}/{BOT_TOKEN}"
-    await app.bot.set_webhook(webhook_url)
-    print(f"🚀 Webhook đang chạy tại: {webhook_url}")
-    await asyncio.Event().wait()
-
-if __name__ == "__main__":
-    asyncio.run(main())
+    threading.Thread(target=keep_alive, daemon=True).start()
+    print("🚀 Bot đang chạy (v8.7 – % upload + auto-delete)...")
+    app.run_polling()
