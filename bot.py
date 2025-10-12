@@ -1,13 +1,16 @@
-import os, time, base64, random, string, requests, zipfile
+import os, time, base64, random, string, requests, zipfile, asyncio
 from io import BytesIO
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
+from telegram.ext import (
+    ApplicationBuilder, CommandHandler, MessageHandler,
+    CallbackQueryHandler, filters, ContextTypes
+)
 
 # ========== CONFIG ==========
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-GITHUB_REPO = "trinhtruongphong-bot/ipa-host"  # repo cố định
+GITHUB_REPO = "trinhtruongphong-bot/ipa-host"
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
-DOMAIN = "https://download.khoindvn.io.vn"      # domain cố định
+DOMAIN = "https://download.khoindvn.io.vn"
 
 IPA_PATH = "IPA"
 PLIST_PATH = "Plist"
@@ -17,7 +20,7 @@ def random_name(n=6):
     return ''.join(random.choices(string.ascii_lowercase + string.digits, k=n))
 
 def extract_info_from_ipa(ipa_bytes):
-    """Đọc Info.plist chuẩn 100% từ file IPA"""
+    """Đọc Info.plist chuẩn 100% từ IPA"""
     try:
         with zipfile.ZipFile(BytesIO(ipa_bytes)) as ipa:
             for name in ipa.namelist():
@@ -61,7 +64,7 @@ def github_delete(path):
     return requests.delete(url, headers=headers, json=data).status_code == 200
 
 def check_link(url, timeout=30):
-    for i in range(timeout):
+    for _ in range(timeout):
         try:
             if requests.head(url, timeout=5).status_code == 200:
                 return True
@@ -77,60 +80,85 @@ def shorten(url):
     except:
         return url
 
+async def auto_delete_message(context: ContextTypes.DEFAULT_TYPE, chat_id, message_id, delay=30):
+    await asyncio.sleep(delay)
+    try:
+        await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
+    except:
+        pass
+
 # ========== COMMANDS ==========
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "👋 Xin chào!\n"
-        "Gửi file `.ipa` để upload và tạo link cài đặt trực tiếp iOS.\n"
-        "Gõ /help để xem hướng dẫn chi tiết."
+    msg = await update.message.reply_text(
+        "👋 Xin chào!\nGửi file `.ipa` để upload và tạo link cài đặt trực tiếp iOS.\nGõ /help để xem hướng dẫn."
     )
+    context.application.create_task(auto_delete_message(context, msg.chat_id, msg.message_id))
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "🧭 Lệnh khả dụng:\n"
-        "/listipa – Danh sách IPA (có nút xoá)\n"
-        "/listplist – Danh sách Plist (có nút xoá)\n"
-        "/help – Xem hướng dẫn\n\n"
-        "Chỉ cần gửi file `.ipa` để upload!"
+    msg = await update.message.reply_text(
+        "🧭 Lệnh:\n/listipa – Danh sách IPA\n/listplist – Danh sách Plist\n/help – Xem hướng dẫn\n\n"
+        "📤 Gửi file `.ipa` để upload!"
     )
+    context.application.create_task(auto_delete_message(context, msg.chat_id, msg.message_id))
 
-async def list_files(update: Update, path, filetype):
+async def list_files(update: Update, context: ContextTypes.DEFAULT_TYPE, path, filetype):
     files = github_list(path)
     if not files:
-        await update.message.reply_text(f"📂 Không có file {filetype}.")
+        msg = await update.message.reply_text(f"📂 Không có file {filetype}.")
+        context.application.create_task(auto_delete_message(context, msg.chat_id, msg.message_id))
         return
     keyboard = []
     for f in files:
-        keyboard.append([InlineKeyboardButton(f"🗑️ Xoá {f}", callback_data=f"delete|{path}|{f}")])
-    await update.message.reply_text(f"📦 Danh sách {filetype}:", reply_markup=InlineKeyboardMarkup(keyboard))
+        keyboard.append([InlineKeyboardButton(f"{f} 🗑️", callback_data=f"delete|{path}|{f}")])
+    msg = await update.message.reply_text(f"📦 Danh sách {filetype}:", reply_markup=InlineKeyboardMarkup(keyboard))
+    context.application.create_task(auto_delete_message(context, msg.chat_id, msg.message_id))
 
 async def list_ipa(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await list_files(update, IPA_PATH, "IPA")
+    await list_files(update, context, IPA_PATH, "IPA")
 
 async def list_plist(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await list_files(update, PLIST_PATH, "Plist")
+    await list_files(update, context, PLIST_PATH, "Plist")
 
 async def handle_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     _, path, filename = query.data.split("|")
     ok = github_delete(f"{path}/{filename}")
-    if ok:
-        await query.edit_message_text(f"✅ Đã xoá `{filename}` khỏi `{path}/`", parse_mode="Markdown")
-    else:
-        await query.edit_message_text(f"❌ Không thể xoá `{filename}`", parse_mode="Markdown")
+    await query.edit_message_text(
+        f"✅ Đã xoá `{filename}` khỏi `{path}/`" if ok else f"❌ Không thể xoá `{filename}`",
+        parse_mode="Markdown"
+    )
 
 # ========== UPLOAD ==========
 async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     doc = update.message.document
     if not doc.file_name.endswith(".ipa"):
-        await update.message.reply_text("⚠️ Vui lòng gửi file `.ipa` hợp lệ!")
+        msg = await update.message.reply_text("⚠️ Vui lòng gửi file `.ipa` hợp lệ!")
+        context.application.create_task(auto_delete_message(context, msg.chat_id, msg.message_id))
         return
 
-    msg = await update.message.reply_text("📤 Đang xử lý file...")
+    msg = await update.message.reply_text("📤 Đang tải file...")
     file = await doc.get_file()
-    ipa_bytes = await file.download_as_bytearray()
+
+    # Hiển thị tiến độ tải
+    total_size = doc.file_size
+    chunk_size = 1024 * 512  # 512KB
+    downloaded = 0
+    buffer = BytesIO()
+
+    async for chunk in file.download_as_stream():
+        buffer.write(chunk)
+        downloaded += len(chunk)
+        percent = int(downloaded / total_size * 100)
+        if percent % 10 == 0:  # cập nhật mỗi 10%
+            try:
+                await msg.edit_text(f"⬆️ Đang tải: {percent}%")
+            except:
+                pass
+
+    ipa_bytes = buffer.getvalue()
     info = extract_info_from_ipa(ipa_bytes)
+    await msg.edit_text("✅ Đã tải xong, đang upload lên GitHub...")
 
     rand = random_name()
     ipa_file = f"{IPA_PATH}/{rand}.ipa"
@@ -153,7 +181,6 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
 </dict></dict></array></dict></plist>"""
     github_upload(plist_file, plist.encode())
 
-    # 🕒 Kiểm tra link
     ready = check_link(ipa_url, timeout=30)
     install_link = f"itms-services://?action=download-manifest&url={plist_url}"
     short_link = shorten(install_link)
@@ -192,5 +219,5 @@ if __name__ == "__main__":
     app.add_handler(CallbackQueryHandler(handle_delete))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_file))
     threading.Thread(target=keep_alive, daemon=True).start()
-    print("🚀 Bot đang chạy (v8-final)...")
+    print("🚀 Bot đang chạy (v9-final)...")
     app.run_polling()
