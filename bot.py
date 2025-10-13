@@ -9,70 +9,117 @@ from telegram.ext import (
 
 # ========== CONFIG ==========
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-GITHUB_REPO = "trinhtruongphong-bot/ipa-host"
+GITHUB_REPO = "trinhtruongphong-bot/ipa-host"   # Repo chứa IPA/Plist
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
-DOMAIN = "https://download.khoindvn.io.vn"
+DOMAIN = "https://download.khoindvn.io.vn"      # Domain public (Pages/CDN)
 
 IPA_PATH = "IPA"
 PLIST_PATH = "Plist"
 
-AUTO_DELETE_SECONDS = 3      # <-- Xoá tin nhắn phụ sau 3s
-CDN_SYNC_SECONDS    = 30     # <-- Chờ CDN 30s rồi gửi link (ổn định hơn)
+AUTO_DELETE_SECONDS = 3      # Xoá tin nhắn phụ sau 3s
+CDN_SYNC_SECONDS    = 30     # Chờ CDN 30s rồi gửi link (ổn định)
 
 # ========== HELPERS ==========
 def random_name(n=6):
     return ''.join(random.choices(string.ascii_lowercase + string.digits, k=n))
 
-def _search_info_plist(zf: zipfile.ZipFile):
-    cands = []
+def _find_main_info_plist(zf: zipfile.ZipFile):
+    """
+    Chỉ lấy Info.plist ở đúng cấp: Payload/<App>.app/Info.plist
+    (tránh nhầm extension/watchOS)
+    """
+    candidates = []
     for name in zf.namelist():
         low = name.lower()
-        if low.startswith("payload/") and ".app/" in low and low.endswith("info.plist"):
-            cands.append(name)
-    return min(cands, key=len) if cands else None
+        if low.endswith("info.plist") and low.startswith("payload/") and ".app/" in low:
+            parts = low.split("/")
+            # Expect: ["payload", "<app>.app", "info.plist"]
+            if len(parts) == 3 and parts[0] == "payload" and parts[1].endswith(".app"):
+                candidates.append(name)
+    if candidates:
+        # nếu có nhiều, lấy path ngắn nhất (ứng dụng chính)
+        return min(candidates, key=len)
+    return None
 
 def _read_mobileprovision(zf: zipfile.ZipFile):
+    """
+    Lấy Team + Bundle fallback từ embedded.mobileprovision:
+    - TeamName, TeamIdentifier, ApplicationIdentifierPrefix
+    - Entitlements['application-identifier'] = <prefix>.<bundle>
+    """
     try:
         for name in zf.namelist():
             if name.lower().endswith("embedded.mobileprovision"):
                 raw = zf.read(name)
                 s = raw.find(b'<?xml'); e = raw.rfind(b'</plist>')
-                if s != -1 and e != -1:
-                    from plistlib import loads
-                    p = loads(raw[s:e+8])
-                    ent = p.get("Entitlements", {}) or {}
-                    appid = ent.get("application-identifier", "")
-                    team_name = p.get("TeamName", None)
-                    team_id = None; bundle_from_ent = None
-                    if appid and "." in appid:
-                        parts = appid.split(".", 1)
-                        team_id = parts[0]; bundle_from_ent = parts[1]
-                    return {
-                        "team_name": team_name or team_id or "Unknown",
-                        "bundle_from_entitlements": bundle_from_ent
-                    }
+                if s == -1 or e == -1:
+                    return {}
+                from plistlib import loads
+                p = loads(raw[s:e+8])
+
+                ent = p.get("Entitlements", {}) or {}
+                appid = ent.get("application-identifier", "")  # PREFIX.BUNDLE
+                team_name = p.get("TeamName")
+                team_id_list = p.get("TeamIdentifier")
+                prefix_list = p.get("ApplicationIdentifierPrefix")
+
+                team_from_list = (team_id_list[0] if isinstance(team_id_list, list) and team_id_list else None)
+                prefix_from_list = (prefix_list[0] if isinstance(prefix_list, list) and prefix_list else None)
+
+                bundle_from_ent = None
+                if appid and "." in appid:
+                    bundle_from_ent = appid.split(".", 1)[1]
+
+                team = team_name or team_from_list or prefix_from_list or "Unknown"
+                return {"team": team, "bundle_from_entitlements": bundle_from_ent}
     except Exception as ex:
         print("⚠️ mobileprovision parse error:", ex)
     return {}
 
 def extract_info_from_ipa(ipa_bytes):
+    """
+    Đọc Info.plist CHUẨN (đúng app chính). Fallback:
+    - embedded.mobileprovision → team + bundle
+    - iTunesMetadata.plist → name/bundle/version nếu thiếu
+    """
     name = "Unknown"; bundle = "unknown.bundle"; version = "1.0"; team = "Unknown"
+
     try:
         with zipfile.ZipFile(BytesIO(ipa_bytes)) as ipa:
-            plist_path = _search_info_plist(ipa)
+            # 1) Info.plist ở vị trí chuẩn
+            plist_path = _find_main_info_plist(ipa)
             if plist_path:
                 from plistlib import loads
-                data = ipa.read(plist_path); p = loads(data)
+                data = ipa.read(plist_path)
+                p = loads(data)
                 name = p.get("CFBundleDisplayName") or p.get("CFBundleName") or name
                 bundle = p.get("CFBundleIdentifier") or bundle
                 version = p.get("CFBundleShortVersionString") or p.get("CFBundleVersion") or version
-            extra = _read_mobileprovision(ipa)
-            if extra:
-                team = extra.get("team_name") or team
-                if bundle == "unknown.bundle" and extra.get("bundle_from_entitlements"):
-                    bundle = extra["bundle_from_entitlements"]
+
+            # 2) Fallback: embedded.mobileprovision
+            prov = _read_mobileprovision(ipa)
+            if prov:
+                team = prov.get("team") or team
+                if bundle == "unknown.bundle" and prov.get("bundle_from_entitlements"):
+                    bundle = prov["bundle_from_entitlements"]
+
+            # 3) Fallback thêm: iTunesMetadata.plist (nếu có)
+            try:
+                if name == "Unknown" or bundle == "unknown.bundle" or version == "1.0":
+                    if "iTunesMetadata.plist" in ipa.namelist():
+                        from plistlib import loads
+                        meta = loads(ipa.read("iTunesMetadata.plist"))
+                        name = meta.get("itemName") or meta.get("bundleDisplayName") or name
+                        if bundle == "unknown.bundle":
+                            bundle = meta.get("softwareVersionBundleId") or bundle
+                        if version == "1.0":
+                            version = meta.get("bundleShortVersionString") or version
+            except Exception:
+                pass
+
     except Exception as e:
         print("❌ Lỗi đọc IPA:", e)
+
     return {"name": name, "bundle": bundle, "version": version, "team": team}
 
 def github_list(path):
@@ -101,6 +148,7 @@ async def auto_delete(context, chat_id, message_id, delay=AUTO_DELETE_SECONDS):
         pass
 
 def shorten_itms(install_link: str):
+    """Rút gọn itms-services (URL-encode đầy đủ) → trả về link is.gd hoặc None."""
     try:
         encoded = quote_plus(install_link, safe="")
         r = requests.get(f"https://is.gd/create.php?format=simple&url={encoded}", timeout=6)
@@ -117,18 +165,30 @@ async def edit_progress(msg, label, pct):
         pass
 
 async def github_upload_with_progress(path: str, raw_bytes: bytes, msg, label="⬆️ Upload GitHub"):
+    """
+    Ước lượng % upload GitHub: encode base64 từng chunk để báo %,
+    rồi PUT một lần (GitHub Contents API không có multipart).
+    """
     headers = {"Authorization": f"token {GITHUB_TOKEN}"}
     url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{path}"
-    total = len(raw_bytes); chunk = 1024 * 1024
-    parts = []; done = 0; last = -1
+
+    total = len(raw_bytes)
+    chunk = 1024 * 1024  # 1MB
+    parts = []
+    done = 0
+    last_shown = -1
+
     for i in range(0, total, chunk):
         part = base64.b64encode(raw_bytes[i:i+chunk]).decode()
         parts.append(part)
         done += min(chunk, total - i)
-        pct = int(done * 100 / total); step = pct // 5
-        if step > last:
-            last = step; await edit_progress(msg, label, min(pct, 95))
+        pct = int(done * 100 / total)
+        step = pct // 5  # cập nhật mỗi 5%
+        if step > last_shown:
+            last_shown = step
+            await edit_progress(msg, label, min(pct, 95))
         await asyncio.sleep(0)
+
     encoded = ''.join(parts)
     payload = {"message": f"Upload {path}", "content": encoded}
     try:
@@ -141,12 +201,18 @@ async def github_upload_with_progress(path: str, raw_bytes: bytes, msg, label="�
 
 # ========== COMMANDS ==========
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = await update.message.reply_text("👋 Xin chào!\nGửi file `.ipa` để upload và tạo link cài đặt iOS.\nGõ /help để xem hướng dẫn.")
+    msg = await update.message.reply_text(
+        "👋 Xin chào!\nGửi file `.ipa` để upload và tạo link cài đặt iOS.\nGõ /help để xem hướng dẫn."
+    )
     context.application.create_task(auto_delete(context, msg.chat_id, msg.message_id))
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text(
-        "🧭 Lệnh:\n/listipa – Danh sách IPA (kèm nút xoá)\n/listplist – Danh sách Plist (kèm nút xoá)\n/help – Hướng dẫn\n\n📤 Gửi file `.ipa` để upload!"
+        "🧭 Lệnh:\n"
+        "/listipa – Danh sách IPA (kèm nút xoá)\n"
+        "/listplist – Danh sách Plist (kèm nút xoá)\n"
+        "/help – Hướng dẫn\n\n"
+        "📤 Gửi file `.ipa` để upload!"
     )
     context.application.create_task(auto_delete(context, msg.chat_id, msg.message_id))
 
@@ -179,7 +245,7 @@ async def handle_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ========== UPLOAD FLOW ==========
 async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     doc = update.message.document
-    if not doc.file_name.endswith(".ipa"):
+    if not doc.file_name.lower().endswith(".ipa"):
         msg = await update.message.reply_text("⚠️ Vui lòng gửi file `.ipa` hợp lệ!")
         context.application.create_task(auto_delete(context, msg.chat_id, msg.message_id))
         return
@@ -192,15 +258,19 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     total = int(r.headers.get("Content-Length", "0")) or doc.file_size or 0
 
     buf = BytesIO(); downloaded = 0; last = -1
-    for chunk in r.iter_content(chunk_size=524288):
-        if not chunk: continue
-        buf.write(chunk); downloaded += len(chunk)
+    for chunk in r.iter_content(chunk_size=524288):  # 512KB
+        if not chunk:
+            continue
+        buf.write(chunk)
+        downloaded += len(chunk)
         if total > 0:
             pct = int(downloaded * 100 / total); step = pct // 10
             if step > last:
                 last = step
-                try: await msg.edit_text(f"⬇️ Nhận từ Telegram: {pct}%")
-                except: pass
+                try:
+                    await msg.edit_text(f"⬇️ Nhận từ Telegram: {pct}%")
+                except:
+                    pass
 
     ipa_bytes = buf.getvalue()
     await msg.edit_text("✅ Đã nhận xong. Đang chuẩn bị upload lên GitHub…")
@@ -221,7 +291,7 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ipa_url = f"{DOMAIN}/{ipa_file}"
     plist_url = f"{DOMAIN}/{plist_file}"
 
-    # (D) Tạo manifest .plist và upload (file nhỏ)
+    # (D) Tạo manifest .plist và upload (file nhỏ, không cần %)
     plist = f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict><key>items</key><array><dict>
@@ -239,7 +309,7 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     payload_pl = {"message": f"Upload {plist_file}", "content": base64.b64encode(plist.encode()).decode()}
     requests.put(url_pl, headers=headers, json=payload_pl, timeout=60)
 
-    # (E) Chờ CDN đồng bộ (ổn định) rồi phát hành link
+    # (E) Chờ CDN đồng bộ rồi phát hành link
     await asyncio.sleep(CDN_SYNC_SECONDS)
     install_link = f"itms-services://?action=download-manifest&url={plist_url}"
     short_link = shorten_itms(install_link)
@@ -258,7 +328,7 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lines.append(f"🔗 **Rút gọn (is.gd):** {short_link}")
     await msg.edit_text("\n".join(lines), parse_mode="Markdown")
 
-# ========== KEEP ALIVE ==========
+# ========== KEEP ALIVE (Render Free) ==========
 def keep_alive():
     while True:
         try:
@@ -271,12 +341,14 @@ def keep_alive():
 if __name__ == "__main__":
     import threading
     app = ApplicationBuilder().token(BOT_TOKEN).build()
+
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("listipa", list_ipa))
     app.add_handler(CommandHandler("listplist", list_plist))
     app.add_handler(CallbackQueryHandler(handle_delete))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_file))
+
     threading.Thread(target=keep_alive, daemon=True).start()
     print("🚀 Bot đang chạy (v8.9-fix2 | auto-delete=3s, cdn-wait=30s)…")
     app.run_polling()
