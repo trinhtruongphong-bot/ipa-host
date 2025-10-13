@@ -8,25 +8,29 @@ from telegram.ext import (
 )
 from telegram.error import TelegramError
 
-# ========== CONFIG qua ENV ==========
+# =================== CONFIG (ENV) ===================
 BOT_TOKEN      = os.getenv("BOT_TOKEN")
 GITHUB_TOKEN   = os.getenv("GITHUB_TOKEN")
 GITHUB_REPO    = os.getenv("GITHUB_REPO", "trinhtruongphong-bot/ipa-host")
-DOMAIN         = os.getenv("DOMAIN", "https://download.khoindvn.io.vn")  # GitHub Pages domain
+DOMAIN         = os.getenv("DOMAIN", "https://download.khoindvn.io.vn")  # KHÔNG có "/" ở cuối
 
 IPA_PATH       = os.getenv("IPA_DIR", "IPA")
 PLIST_PATH     = os.getenv("PLIST_DIR", "Plist")
 
-AUTO_DELETE_SECONDS = int(os.getenv("AUTO_DELETE_SECONDS", "30"))  # xoá tin nhắn phụ
-CDN_SYNC_SECONDS    = int(os.getenv("CDN_SYNC_SECONDS", "30"))    # chờ CDN
+AUTO_DELETE_SECONDS = int(os.getenv("AUTO_DELETE_SECONDS", "30"))  # tin nhắn phụ
+CDN_SYNC_SECONDS    = int(os.getenv("CDN_SYNC_SECONDS", "30"))    # chờ CDN GitHub Pages
 DEBUG               = os.getenv("DEBUG", "0") == "1"
 
-# ========== UTILS ==========
+# =================== UTILS ===================
 def rname(n=6):
     return ''.join(random.choices(string.ascii_lowercase + string.digits, k=n))
 
 def _dbg(*a):
     if DEBUG: print("[DBG]", *a)
+
+def md_escape_v1(s: str) -> str:
+    """Escape đơn giản cho Markdown V1"""
+    return str(s).replace("_", "\\_").replace("*", "\\*").replace("`", "\\`").replace("[", "\\[")
 
 async def auto_delete(ctx, chat_id, msg_id, delay=AUTO_DELETE_SECONDS):
     await asyncio.sleep(delay)
@@ -44,8 +48,12 @@ def github_delete(path):
     g = requests.get(f"https://api.github.com/repos/{GITHUB_REPO}/contents/{path}", headers=gh_headers(), timeout=30)
     if g.status_code != 200: return False
     sha = g.json()["sha"]
-    r = requests.delete(f"https://api.github.com/repos/{GITHUB_REPO}/contents/{path}",
-                        headers=gh_headers(), json={"message": f"delete {path}", "sha": sha}, timeout=30)
+    r = requests.delete(
+        f"https://api.github.com/repos/{GITHUB_REPO}/contents/{path}",
+        headers=gh_headers(),
+        json={"message": f"delete {path}", "sha": sha},
+        timeout=30
+    )
     return r.status_code == 200
 
 def shorten_itms(install_link: str):
@@ -59,15 +67,16 @@ def shorten_itms(install_link: str):
         print("⚠️ is.gd error:", e)
     return None
 
-# ---------- IPA parsing (mạnh tay) ----------
+# =================== IPA PARSING (mạnh tay) ===================
 def _read_mobileprovision(zf: zipfile.ZipFile):
-    """Lấy team + bundle fallback từ embedded.mobileprovision."""
+    """Lấy team + bundle dự phòng từ embedded.mobileprovision."""
     try:
         for name in zf.namelist():
             if name.lower().endswith("embedded.mobileprovision"):
                 raw = zf.read(name)
                 s = raw.find(b'<?xml'); e = raw.rfind(b'</plist>')
-                if s == -1 or e == -1: return {}
+                if s == -1 or e == -1:
+                    return {}
                 from plistlib import loads
                 p = loads(raw[s:e+8])
 
@@ -88,52 +97,91 @@ def _read_mobileprovision(zf: zipfile.ZipFile):
         print("⚠️ mobileprovision parse error:", ex)
     return {}
 
-def _pick_info_plist(zf: zipfile.ZipFile):
-    """Chọn Info.plist hợp lý nhất: ưu tiên Payload/<App>.app/Info.plist; tránh *.appex/watchkit/plugins/extension."""
-    cands = []
+def _iter_app_info_plists(zf: zipfile.ZipFile):
+    """Trả về mọi đường dẫn Info.plist nằm dưới Payload/*.app/ (bỏ frameworks/support)."""
     for name in zf.namelist():
         low = name.lower()
-        if low.startswith("payload/") and ".app/" in low and low.endswith("info.plist"):
-            score = 0
-            parts = low.split("/")
-            if len(parts) == 3 and parts[0] == "payload" and parts[1].endswith(".app"):
-                score += 5  # đúng cấp
-            if any(x in low for x in [".appex/", "watchkit", "/plugins/", "extension"]):
-                score -= 5  # loại extension
-            cands.append((score, len(name), name))
-    if not cands: return None
-    cands.sort(key=lambda x: (-x[0], x[1]))  # điểm cao hơn, path ngắn hơn
-    return cands[0][2]
+        if not low.startswith("payload/"): 
+            continue
+        if "/frameworks/" in low or "/support/" in low:
+            continue
+        if ".app/" in low and low.endswith("info.plist"):
+            yield name
+
+def _parse_plist(data: bytes):
+    """Đọc plist: thử plistlib trước, lỗi thì fallback biplist (đọc binary/UID)."""
+    try:
+        from plistlib import loads
+        return loads(data)
+    except Exception:
+        try:
+            from biplist import readPlistFromString
+            return readPlistFromString(data)
+        except Exception:
+            return None
 
 def extract_info_from_ipa(ipa_bytes: bytes):
     """
-    Đọc Info.plist với plistlib; nếu lỗi thì fallback biplist (đọc được UID, binary phức tạp).
-    Fallback thêm iTunesMetadata + mobileprovision.
+    Chọn Info.plist tốt nhất bằng điểm:
+    +4 đúng cấp Payload/<App>.app/Info.plist
+    −6 appex/watchkit/plugins/extensions
+    +4 có CFBundleIdentifier
+    +6 bundle == entitlements (không phải '*')
+    +2 CFBundlePackageType == 'APPL'
+    +1 có CFBundleExecutable
+    Fallback iTunesMetadata + mobileprovision + tên thư mục .app.
     """
     name, bundle, version, team = "Unknown", "unknown.bundle", "1.0", "Unknown"
     try:
         with zipfile.ZipFile(BytesIO(ipa_bytes)) as ipa:
             prov = _read_mobileprovision(ipa)
             team = prov.get("team") or team
+            bundle_from_ent = prov.get("bundle_from_entitlements")
 
-            plist_path = _pick_info_plist(ipa)
-            meta = None
-            if plist_path:
-                data = ipa.read(plist_path)
-                try:
-                    from plistlib import loads
-                    meta = loads(data)                      # thử plistlib
-                except Exception:
-                    try:
-                        from biplist import readPlistFromString
-                        meta = readPlistFromString(data)    # fallback biplist
-                    except Exception as ex:
-                        print("❌ plist parse fail:", ex)
+            best_meta, best_path, best_score = None, None, -10**9
 
-            if isinstance(meta, dict):
-                name    = meta.get("CFBundleDisplayName") or meta.get("CFBundleName") or name
-                bundle  = meta.get("CFBundleIdentifier") or bundle
-                version = meta.get("CFBundleShortVersionString") or meta.get("CFBundleVersion") or version
+            for path in _iter_app_info_plists(ipa):
+                data = ipa.read(path)
+                meta = _parse_plist(data)
+                if not isinstance(meta, dict):
+                    continue
+
+                low = path.lower()
+                parts = low.split("/")
+                score = 0
+                if len(parts) == 3 and parts[0] == "payload" and parts[1].endswith(".app"):
+                    score += 4
+                if any(x in low for x in [".appex/", "watchkit", "/plugins/", "/extensions/", "extension"]):
+                    score -= 6
+
+                cb = meta.get("CFBundleIdentifier")
+                if cb: score += 4
+                if bundle_from_ent and cb == bundle_from_ent and cb != "*":
+                    score += 6
+
+                if meta.get("NSExtension") is not None:
+                    score -= 6  # extension chắc chắn
+
+                if meta.get("CFBundlePackageType") == "APPL":
+                    score += 2
+                if meta.get("CFBundleExecutable"):
+                    score += 1
+
+                if DEBUG:
+                    print("[DBG] candidate:", path, 
+                          {"id": cb, "name": meta.get("CFBundleDisplayName") or meta.get("CFBundleName"),
+                           "ver": meta.get("CFBundleShortVersionString") or meta.get("CFBundleVersion"),
+                           "score": score})
+
+                if score > best_score:
+                    best_score, best_meta, best_path = score, meta, path
+
+            if best_meta:
+                name    = best_meta.get("CFBundleDisplayName") or best_meta.get("CFBundleName") or name
+                bundle  = best_meta.get("CFBundleIdentifier") or bundle
+                version = best_meta.get("CFBundleShortVersionString") or best_meta.get("CFBundleVersion") or version
+                if DEBUG:
+                    print("[DBG] chosen:", best_path, {"name": name, "bundle": bundle, "version": version})
 
             # Fallback iTunesMetadata nếu còn thiếu
             try:
@@ -147,6 +195,14 @@ def extract_info_from_ipa(ipa_bytes: bytes):
             except Exception:
                 pass
 
+            # Cuối: nếu tên vẫn Unknown, đặt theo tên thư mục .app
+            if name == "Unknown" and best_path:
+                try:
+                    appdir = best_path.split("/")[1]  # Payload/<App>.app/Info.plist
+                    name = appdir[:-4] if appdir.lower().endswith(".app") else appdir
+                except Exception:
+                    pass
+
     except Exception as e:
         print("❌ IPA parse error:", e)
 
@@ -157,7 +213,7 @@ def extract_info_from_ipa(ipa_bytes: bytes):
         "team": team or "Unknown",
     }
 
-# ---------- Upload GitHub với % (ước lượng) ----------
+# =================== Upload GitHub (có %) ===================
 async def _edit_progress(msg, label, pct):
     try:    await msg.edit_text(f"{label}: {pct}%")
     except:  pass
@@ -184,7 +240,7 @@ async def github_upload_with_progress(path: str, raw: bytes, msg, label="⬆️ 
         print("❌ PUT GitHub error:", e)
         return False
 
-# ========== COMMANDS ==========
+# =================== COMMANDS ===================
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text(
         "👋 Xin chào!\nGửi file `.ipa` để upload và tạo link cài đặt iOS.\nGõ /help để xem hướng dẫn."
@@ -222,9 +278,12 @@ async def handle_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await q.answer()
     _, path, fname = q.data.split("|")
     ok = github_delete(f"{path}/{fname}")
-    await q.edit_message_text(f"✅ Đã xoá `{fname}` khỏi `{path}/`" if ok else f"❌ Không thể xoá `{fname}`", parse_mode="Markdown")
+    await q.edit_message_text(
+        f"✅ Đã xoá `{md_escape_v1(fname)}` khỏi `{path}/`" if ok else f"❌ Không thể xoá `{md_escape_v1(fname)}`",
+        parse_mode="Markdown"
+    )
 
-# ========== HANDLE IPA ==========
+# =================== HANDLE IPA ===================
 async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     doc = update.message.document
     if not doc.file_name.lower().endswith(".ipa"):
@@ -232,7 +291,7 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.application.create_task(auto_delete(context, msg.chat_id, msg.message_id))
         return
 
-    # A) nhận từ Telegram (báo % thật)
+    # A) Nhận từ Telegram (báo % thật)
     msg = await update.message.reply_text("📤 Đang nhận file IPA…")
     tg_file = await doc.get_file()
     file_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{tg_file.file_path}"
@@ -253,16 +312,16 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ipa_bytes = buf.getvalue()
     await msg.edit_text("✅ Đã nhận xong. Đang phân tích…")
 
-    # B) phân tích IPA
+    # B) Phân tích IPA
     info = extract_info_from_ipa(ipa_bytes)
     await msg.edit_text("✅ Phân tích xong. Đang upload GitHub…")
 
-    # C) đặt tên random (chỉ a-z0-9)
+    # C) Đặt tên random (a-z0-9)
     rid = rname()
     ipa_key   = f"{IPA_PATH}/{rid}.ipa"
     plist_key = f"{PLIST_PATH}/{rid}.plist"
 
-    # D) upload IPA (ước lượng %)
+    # D) Upload IPA (ước lượng %)
     ok = await github_upload_with_progress(ipa_key, ipa_bytes, msg, "⬆️ Upload GitHub (IPA)")
     if not ok:
         err = await update.message.reply_text("❌ Upload IPA lên GitHub thất bại.")
@@ -272,7 +331,7 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ipa_url   = f"{DOMAIN}/{ipa_key}"
     plist_url = f"{DOMAIN}/{plist_key}"
 
-    # E) tạo & upload manifest .plist
+    # E) Tạo & upload manifest .plist (nhỏ, upload một phát)
     plist = f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict><key>items</key><array><dict>
@@ -291,31 +350,31 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         timeout=60
     )
 
-    # F) đợi CDN rồi phát hành link — CHỈ gửi link rút gọn (fallback itms nếu rút gọn fail)
+    # F) Đợi CDN rồi phát hành link — chỉ 1 link rút gọn (fallback itms nếu rút gọn fail)
     await asyncio.sleep(CDN_SYNC_SECONDS)
     itms = f"itms-services://?action=download-manifest&url={plist_url}"
     link_display = shorten_itms(itms) or itms
 
-    # G) gửi kết quả (KHÔNG auto-delete)
+    # G) Gửi kết quả (KHÔNG auto-delete)
     lines = [
         "✅ **Upload thành công!**\n",
-        f"📱 **Tên ứng dụng:** {info['name']}",
-        f"🆔 **Bundle ID:** {info['bundle']}",
-        f"🔢 **Phiên bản:** {info['version']}",
-        f"👥 **Team ID:** {info['team']}\n",
+        f"📱 **Tên ứng dụng:** {md_escape_v1(info['name'])}",
+        f"🆔 **Bundle ID:** {md_escape_v1(info['bundle'])}",
+        f"🔢 **Phiên bản:** {md_escape_v1(info['version'])}",
+        f"👥 **Team ID:** {md_escape_v1(info['team'])}\n",
         f"📦 **Tải IPA:** {ipa_url}",
         f"📲 **Cài trực tiếp:** {link_display}",
     ]
     await msg.edit_text("\n".join(lines), parse_mode="Markdown")
 
-# ========== KEEP-ALIVE (Render free) ==========
+# =================== KEEP-ALIVE (Render free) ===================
 def keep_alive():
     while True:
         try:    requests.get(DOMAIN, timeout=10)
         except:  pass
         time.sleep(50)
 
-# ========== STARTUP (clear webhook để tránh Conflict) ==========
+# =================== STARTUP ===================
 async def _startup(app):
     try:
         await app.bot.delete_webhook(drop_pending_updates=True)
@@ -323,15 +382,10 @@ async def _startup(app):
     except TelegramError as e:
         print("⚠️ delete_webhook:", e)
 
-# ========== MAIN ==========
+# =================== MAIN ===================
 if __name__ == "__main__":
     import threading
-    app = (
-        ApplicationBuilder()
-        .token(BOT_TOKEN)
-        .post_init(_startup)   # xoá webhook trước khi polling
-        .build()
-    )
+    app = (ApplicationBuilder().token(BOT_TOKEN).post_init(_startup).build())
 
     app.add_handler(CommandHandler("start",     cmd_start))
     app.add_handler(CommandHandler("help",      cmd_help))
@@ -341,5 +395,5 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.Document.ALL, handle_file))
 
     threading.Thread(target=keep_alive, daemon=True).start()
-    print("🚀 Bot đang chạy (v9.2)…")
+    print("🚀 Bot đang chạy (v9.3)…")
     app.run_polling(drop_pending_updates=True)
