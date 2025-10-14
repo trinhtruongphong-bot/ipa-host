@@ -3,7 +3,7 @@ services:
     name: ipa-server-bot
     env: python
     buildCommand: pip install -r requirements.txt
-    startCommand: python bot.py
+    startCommand: python app.py & python bot.py
     plan: free
     envVars:
       - key: GITHUB_TOKEN
