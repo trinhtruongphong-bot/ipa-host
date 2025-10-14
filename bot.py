@@ -6,23 +6,20 @@ load_dotenv()
 bot = telebot.TeleBot(os.getenv("BOT_TOKEN"))
 GITHUB_REPO = os.getenv("GITHUB_REPO")
 
+# Tạo mã ngẫu nhiên 5 ký tự
 def random_code(length=5):
     return ''.join(random.choices(string.ascii_lowercase + string.digits, k=length))
 
-# Escape ký tự đặc biệt MarkdownV2
+# Escape ký tự MarkdownV2
 def escape_md(text: str) -> str:
-    """
-    Escape toàn bộ ký tự đặc biệt trong MarkdownV2 theo chuẩn Telegram.
-    """
     if not text:
         return ''
-    # Escape mọi ký tự đặc biệt MarkdownV2
     escape_chars = r'_*[]()~`>#+-=|{}.!'
     for ch in escape_chars:
         text = text.replace(ch, f'\\{ch}')
     return text
 
-# ----------------- UPLOAD IPA -----------------
+# ----------------- Xử lý upload IPA -----------------
 @bot.message_handler(content_types=['document'])
 def handle_ipa(message):
     try:
@@ -78,7 +75,6 @@ def handle_ipa(message):
 📲 [Cài trực tiếp]({escape_md(short_install)})
 🆔 *Mã tệp:* `{escape_md(code)}`
 """
-
         bot.send_message(message.chat.id, msg, parse_mode="MarkdownV2")
         bot.delete_message(message.chat.id, temp_msg.id)
         os.remove(temp_ipa)
@@ -87,7 +83,7 @@ def handle_ipa(message):
     except Exception as e:
         bot.send_message(message.chat.id, f"❌ Lỗi xử lý IPA: {escape_md(str(e))}", parse_mode="MarkdownV2")
 
-# ----------------- LIST FILES -----------------
+# ----------------- Liệt kê IPA -----------------
 @bot.message_handler(commands=['listipa'])
 def list_ipa(message):
     temp_msg = bot.send_message(message.chat.id, "🔍 Đang tải danh sách iPA...", parse_mode="MarkdownV2")
@@ -105,6 +101,7 @@ def list_ipa(message):
         markup.add(telebot.types.InlineKeyboardButton("🗑️ Xoá", callback_data=f"del|iPA|{file['name']}"))
         bot.send_message(message.chat.id, f"📦 `{fname}`\n🔗 {url}", parse_mode="MarkdownV2", reply_markup=markup)
 
+# ----------------- Liệt kê PLIST -----------------
 @bot.message_handler(commands=['listplist'])
 def list_plist(message):
     temp_msg = bot.send_message(message.chat.id, "🔍 Đang tải danh sách plist...", parse_mode="MarkdownV2")
@@ -122,7 +119,7 @@ def list_plist(message):
         markup.add(telebot.types.InlineKeyboardButton("🗑️ Xoá", callback_data=f"del|plist|{file['name']}"))
         bot.send_message(message.chat.id, f"🧾 `{fname}`\n🔗 {url}", parse_mode="MarkdownV2", reply_markup=markup)
 
-# ----------------- DELETE -----------------
+# ----------------- Xoá file -----------------
 @bot.callback_query_handler(func=lambda call: call.data.startswith("del|"))
 def delete_file(call):
     _, folder, fname = call.data.split("|")
@@ -136,5 +133,5 @@ def delete_file(call):
     except Exception as e:
         bot.answer_callback_query(call.id, f"Lỗi xoá file: {e}")
 
-print("🤖 Bot đang chạy...")
+print("🤖 Bot đang chạy trên Koyeb...")
 bot.polling(non_stop=True)
