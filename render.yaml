@@ -2,9 +2,9 @@ services:
   - type: web
     name: ipa-server-bot
     env: python
+    plan: free
     buildCommand: pip install -r requirements.txt
     startCommand: python app.py & python bot.py
-    plan: free
     envVars:
       - key: GITHUB_TOKEN
         sync: false
@@ -15,4 +15,4 @@ services:
       - key: TELEGRAM_TOKEN
         sync: false
       - key: WEB_CONCURRENCY
-        value: 1
+        value: 1   # ✅ ép Render chỉ chạy 1 process duy nhất (fix lỗi xung đột bot)
