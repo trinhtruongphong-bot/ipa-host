@@ -28,41 +28,51 @@ def shorten(url):
         return r.text.strip() if r.ok and r.text.startswith("http") else url
     except: return url
 
-# =================== IPA PARSING ===================
-def parse_mobileprovision(zf):
+# =================== IPA ANALYZER ===================
+def parse_mobileprovision(raw):
     try:
-        for name in zf.namelist():
-            if name.lower().endswith("embedded.mobileprovision"):
-                raw = zf.read(name)
-                s, e = raw.find(b'<?xml'), raw.rfind(b'</plist>')
-                if s == -1 or e == -1: return {}
-                from plistlib import loads
-                p = loads(raw[s:e+8])
-                team = p.get("TeamName") or "Unknown"
-                ent = p.get("Entitlements", {})
-                appid = ent.get("application-identifier", "")
-                bundle_from_ent = appid.split(".", 1)[1] if "." in appid else None
-                return {"team": team, "bundle_from_ent": bundle_from_ent}
-    except: pass
-    return {}
+        s, e = raw.find(b'<?xml'), raw.rfind(b'</plist>')
+        if s == -1 or e == -1: return {}
+        from plistlib import loads
+        p = loads(raw[s:e+8])
+        team = p.get("TeamName") or "Unknown"
+        appid = p.get("Entitlements", {}).get("application-identifier", "")
+        appid = appid.split(".", 1)[1] if "." in appid else appid
+        created = str(p.get("CreationDate", ""))[:19].replace("T", " ")
+        expired = str(p.get("ExpirationDate", ""))[:19].replace("T", " ")
+        appname = p.get("AppIDName") or "Unknown"
+        return {
+            "team": team,
+            "appid": appid,
+            "appname": appname,
+            "created": created,
+            "expired": expired
+        }
+    except Exception as e:
+        print("⚠️ Parse provision error:", e)
+        return {}
 
 def parse_plist(data):
     try:
         from plistlib import loads
         return loads(data)
-    except Exception:
+    except:
         try:
             from biplist import readPlistFromString
             return readPlistFromString(data)
         except: return None
 
 def extract_info(ipa_bytes, filename):
-    name, bundle, version, team = "Unknown", "unknown.bundle", "1.0", "Unknown"
+    info = {"appname":"Unknown","bundle":"unknown.bundle","version":"1.0",
+            "team":"Unknown","created":"-","expired":"-"}
     try:
         with zipfile.ZipFile(BytesIO(ipa_bytes)) as ipa:
-            prov = parse_mobileprovision(ipa)
-            team = prov.get("team", team)
-            bundle_from_ent = prov.get("bundle_from_ent")
+            for name in ipa.namelist():
+                if name.lower().endswith("embedded.mobileprovision"):
+                    prov = parse_mobileprovision(ipa.read(name))
+                    info.update(prov)
+                    break
+
             best_meta, best_score = None, -999
             for path in ipa.namelist():
                 if not path.lower().endswith("info.plist"): continue
@@ -70,45 +80,35 @@ def extract_info(ipa_bytes, filename):
                 if not meta: continue
                 low, score = path.lower(), 0
                 if "payload/" in low and ".app/" in low: score += 6
-                if ".appex" in low: score -= 3
                 if meta.get("CFBundleIdentifier"): score += 3
-                if bundle_from_ent and meta.get("CFBundleIdentifier") == bundle_from_ent: score += 2
                 if meta.get("CFBundlePackageType") == "APPL": score += 2
-                if score > best_score:
-                    best_score, best_meta = score, meta
+                if score > best_score: best_score, best_meta = score, meta
             if best_meta:
-                name    = best_meta.get("CFBundleDisplayName") or best_meta.get("CFBundleName") or name
-                bundle  = best_meta.get("CFBundleIdentifier") or bundle
-                version = best_meta.get("CFBundleShortVersionString") or best_meta.get("CFBundleVersion") or version
-            elif "iTunesMetadata.plist" in ipa.namelist():
-                from plistlib import loads
-                mdp = loads(ipa.read("iTunesMetadata.plist"))
-                name   = mdp.get("itemName") or name
-                bundle = mdp.get("softwareVersionBundleId") or bundle
-                version= mdp.get("bundleShortVersionString") or version
-            if name == "Unknown": name = os.path.splitext(os.path.basename(filename))[0]
+                info["appname"] = best_meta.get("CFBundleDisplayName") or best_meta.get("CFBundleName") or info["appname"]
+                info["bundle"]  = best_meta.get("CFBundleIdentifier") or info["bundle"]
+                info["version"] = best_meta.get("CFBundleShortVersionString") or best_meta.get("CFBundleVersion") or info["version"]
     except Exception as e:
         print("⚠️ Parse error:", e)
-    return {"name": name, "bundle": bundle, "version": version, "team": team}
+    return info
 
 # =================== TELEGRAM BOT ===================
 async def start(update, ctx):
-    msg = await update.message.reply_text("👋 Gửi file `.ipa` để tạo link cài đặt iOS!")
+    msg = await update.message.reply_text("👋 Gửi file `.ipa` để bot phân tích và tạo link cài đặt!")
     ctx.application.create_task(auto_delete(ctx, msg.chat_id, msg.message_id))
 
 async def help_cmd(update, ctx):
-    txt = "🧭 Lệnh hỗ trợ:\n/start - Bắt đầu\n/help - Trợ giúp\n\n📤 Gửi file `.ipa` để upload!"
+    txt = "🧭 /start - Bắt đầu\n/help - Hướng dẫn\nGửi file `.ipa` để tạo link OTA"
     msg = await update.message.reply_text(txt)
     ctx.application.create_task(auto_delete(ctx, msg.chat_id, msg.message_id))
 
 async def handle_ipa(update, ctx):
     doc = update.message.document
     if not doc.file_name.lower().endswith(".ipa"):
-        msg = await update.message.reply_text("⚠️ Vui lòng gửi file `.ipa` hợp lệ!")
+        msg = await update.message.reply_text("⚠️ Gửi file `.ipa` hợp lệ nhé!")
         ctx.application.create_task(auto_delete(ctx, msg.chat_id, msg.message_id))
         return
 
-    msg = await update.message.reply_text("📤 Đang tải file IPA...")
+    msg = await update.message.reply_text("📤 Đang tải và phân tích IPA...")
     tg_file = await doc.get_file()
     data = requests.get(f"https://api.telegram.org/file/bot{BOT_TOKEN}/{tg_file.file_path}", timeout=300).content
     info = extract_info(data, doc.file_name)
@@ -117,7 +117,6 @@ async def handle_ipa(update, ctx):
     ipa_path = f"{IPA_PATH}/{rid}.ipa"
     plist_path = f"{PLIST_PATH}/{rid}.plist"
 
-    # Upload IPA lên GitHub
     requests.put(f"https://api.github.com/repos/{GITHUB_REPO}/contents/{ipa_path}",
                  headers=gh_headers(),
                  json={"message": f"Upload {ipa_path}",
@@ -132,7 +131,7 @@ async def handle_ipa(update, ctx):
 <key>bundle-identifier</key><string>{info['bundle']}</string>
 <key>bundle-version</key><string>{info['version']}</string>
 <key>kind</key><string>software</string>
-<key>title</key><string>{info['name']}</string>
+<key>title</key><string>{info['appname']}</string>
 </dict></dict></array></dict></plist>"""
 
     requests.put(f"https://api.github.com/repos/{GITHUB_REPO}/contents/{plist_path}",
@@ -145,33 +144,32 @@ async def handle_ipa(update, ctx):
 
     await msg.edit_text(
         f"✅ **Upload thành công!**\n\n"
-        f"📱 Tên ứng dụng: {md(info['name'])}\n"
-        f"🆔 Bundle ID: {md(info['bundle'])}\n"
-        f"🔢 Phiên bản: {md(info['version'])}\n"
-        f"👥 Team: {md(info['team'])}\n\n"
+        f"📱 App Name: {md(info['appname'])}\n"
+        f"🆔 Package Name: {md(info['bundle'])}\n"
+        f"🔢 Version: {md(info['version'])}\n"
+        f"👥 Team Name: {md(info['team'])}\n"
+        f"📅 Cert: {md(info['created'])} → {md(info['expired'])}\n\n"
         f"📦 [Tải IPA]({DOMAIN}/{ipa_path})\n"
         f"📲 [Cài trực tiếp]({short})",
         parse_mode="Markdown"
     )
 
-# =================== MAIN (Render fix) ===================
+# =================== MAIN ===================
 if __name__ == "__main__":
-    nest_asyncio.apply()  # vá vòng lặp event loop Render
-
+    nest_asyncio.apply()
     async def main():
         bot = telegram.Bot(BOT_TOKEN)
-        await bot.delete_webhook(drop_pending_updates=True)  # auto clear webhook
+        await bot.delete_webhook(drop_pending_updates=True)
 
         app = ApplicationBuilder().token(BOT_TOKEN).build()
         app.add_handler(CommandHandler("start", start))
         app.add_handler(CommandHandler("help", help_cmd))
         app.add_handler(MessageHandler(filters.Document.ALL, handle_ipa))
 
-        # keep alive thread
         import threading
         threading.Thread(target=lambda: (requests.get(DOMAIN, timeout=10), time.sleep(50)), daemon=True).start()
 
-        print("🚀 Bot đang chạy (Render version)…")
+        print("🚀 Bot Certificate Parser đang chạy trên Render...")
         await app.run_polling()
 
     asyncio.get_event_loop().run_until_complete(main())
