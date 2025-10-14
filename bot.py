@@ -10,10 +10,17 @@ def random_code(length=5):
     return ''.join(random.choices(string.ascii_lowercase + string.digits, k=length))
 
 # Escape ký tự đặc biệt MarkdownV2
-def escape_md(text):
+def escape_md(text: str) -> str:
+    """
+    Escape toàn bộ ký tự đặc biệt trong MarkdownV2 theo chuẩn Telegram.
+    """
     if not text:
         return ''
-    return re.sub(r'([_*\[\]()~`>#+\-=|{}.!])', r'\\\1', str(text))
+    # Escape mọi ký tự đặc biệt MarkdownV2
+    escape_chars = r'_*[]()~`>#+-=|{}.!'
+    for ch in escape_chars:
+        text = text.replace(ch, f'\\{ch}')
+    return text
 
 # ----------------- UPLOAD IPA -----------------
 @bot.message_handler(content_types=['document'])
