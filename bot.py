@@ -13,7 +13,6 @@ def random_code(length=5):
 @bot.message_handler(content_types=['document'])
 def handle_ipa(message):
     try:
-        # Tin nhắn tạm
         temp_msg = bot.send_message(message.chat.id, f"📦 Đang xử lý `{message.document.file_name}`...", parse_mode="Markdown")
 
         file_info = bot.get_file(message.document.file_id)
@@ -24,21 +23,17 @@ def handle_ipa(message):
         plist_name = f"{code}.plist"
         temp_ipa = os.path.join(tempfile.gettempdir(), ipa_name)
 
-        # Lưu file IPA tạm
         with open(temp_ipa, "wb") as f:
             f.write(file_data)
 
-        # Phân tích thông tin IPA
         info = extract_info(temp_ipa)
         app_name = info.get('name', 'Unknown')
         bundle = info.get('bundle', 'unknown.bundle')
         version = info.get('version', '1.0')
         team = info.get('team', 'Unknown')
 
-        # Upload IPA → iPA/
         ipa_url = upload_to_github(temp_ipa, folder="iPA", rename=ipa_name)
 
-        # Tạo file plist → plist/
         temp_plist = os.path.join(tempfile.gettempdir(), plist_name)
         manifest = {
             "items": [{
@@ -51,17 +46,13 @@ def handle_ipa(message):
                 }
             }]
         }
-
         with open(temp_plist, 'wb') as f:
             plistlib.dump(manifest, f)
 
         plist_url = upload_to_github(temp_plist, folder="plist", rename=plist_name)
-
-        # Link cài trực tiếp (rút gọn)
         install_link = f"itms-services://?action=download-manifest&url={plist_url}"
         short_install = shorten_url(install_link)
 
-        # Gửi kết quả
         msg = f"""
 ✅ **Upload thành công!**
 
@@ -76,10 +67,7 @@ def handle_ipa(message):
 """
         bot.send_message(message.chat.id, msg, parse_mode="Markdown")
 
-        # Xoá tin tạm
         bot.delete_message(message.chat.id, temp_msg.id)
-
-        # Dọn file tạm
         os.remove(temp_ipa)
         os.remove(temp_plist)
 
@@ -121,7 +109,7 @@ def list_plist(message):
         markup.add(telebot.types.InlineKeyboardButton("🗑️ Xoá", callback_data=f"del|plist|{fname}"))
         bot.send_message(message.chat.id, f"🧾 `{fname}`\n🔗 {url}", parse_mode="Markdown", reply_markup=markup)
 
-# ----------------- DELETE FILE -----------------
+# ----------------- DELETE -----------------
 @bot.callback_query_handler(func=lambda call: call.data.startswith("del|"))
 def delete_file(call):
     _, folder, fname = call.data.split("|")
