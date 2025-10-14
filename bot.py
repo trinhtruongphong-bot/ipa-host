@@ -253,6 +253,7 @@ async def handle_file(update, context):
 if __name__ == "__main__":
     import threading
     import asyncio
+    import nest_asyncio  # 👈 thêm thư viện này
 
     async def startup():
         bot = telegram.Bot(BOT_TOKEN)
@@ -271,20 +272,13 @@ if __name__ == "__main__":
             daemon=True
         ).start()
 
-        print("🚀 Bot đang chạy (Render-safe async loop)…")
+        print("🚀 Bot đang chạy (Render + nest_asyncio fix)…")
         await app.run_polling()
 
+    # ⚙️ Vá vòng lặp event loop sẵn có của Render
     try:
-        # ⚙️ Nếu không có event loop, tạo mới
+        nest_asyncio.apply()
         loop = asyncio.get_event_loop()
-        if loop.is_running():
-            print("⚠️ Existing event loop detected — using it directly.")
-            loop.create_task(startup())
-            loop.run_forever()
-        else:
-            loop.run_until_complete(startup())
-    except RuntimeError:
-        print("⚙️ Creating new event loop manually (Render fix).")
-        new_loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(new_loop)
-        new_loop.run_until_complete(startup())
+        loop.run_until_complete(startup())
+    except Exception as e:
+        print("❌ Lỗi khởi động bot:", e)
