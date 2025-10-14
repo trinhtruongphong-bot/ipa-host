@@ -1,106 +1,121 @@
 # ==========================================================
-# app.py — Flask server chính cho IPA Upload API
+# app.py — Flask API + Telegram Webhook (Render)
 # ==========================================================
-# Nhiệm vụ:
-# - Nhận file .ipa qua /upload
-# - Phân tích thông tin IPA (app name, bundle ID, version, team name)
-# - Random tên file
-# - Upload .ipa và .plist lên GitHub (thư mục iPA/ và Plist/)
-# - Sinh link cài itms-services://
-# - Rút gọn link bằng is.gd
+# - /upload : nhận file IPA, xử lý, upload GitHub
+# - /webhook/<BOT_TOKEN> : nhận update từ Telegram
 # ==========================================================
 
 import os
-import secrets
 import tempfile
-import plistlib
+import requests
 from flask import Flask, request, jsonify
+from telegram import Update
+from telegram.ext import Application
 from ipa_utils import extract_ipa_info
 from github_uploader import upload_to_github
-import requests
+import base64
+import random
+import string
+import json
 
 app = Flask(__name__)
 
-# Hàm rút gọn link bằng is.gd
-def shorten_url(url):
-    try:
-        res = requests.get(f"https://is.gd/create.php?format=simple&url={url}", timeout=5)
-        if res.status_code == 200:
-            return res.text.strip()
-    except Exception:
-        pass
-    return url
+# === ENV CONFIG ===
+BOT_TOKEN = os.getenv("TELEGRAM_TOKEN")
+REPO = os.getenv("GITHUB_REPO")
+BRANCH = os.getenv("GITHUB_BRANCH", "main")
+WEBHOOK_URL = f"https://hehe-aoxt.onrender.com/webhook/{BOT_TOKEN}"  # 👉 thay domain nếu khác
 
+# Tạo Telegram Application (webhook mode)
+telegram_app = Application.builder().token(BOT_TOKEN).build()
+
+# ==========================================================
+# 1️⃣ ROUTE: /upload (xử lý IPA)
+# ==========================================================
 @app.route("/upload", methods=["POST"])
 def upload_ipa():
     if "file" not in request.files:
-        return jsonify({"error": "Thiếu file IPA"}), 400
+        return jsonify({"error": "No file uploaded"}), 400
 
     ipa_file = request.files["file"]
-    if not ipa_file.filename.endswith(".ipa"):
-        return jsonify({"error": "Chỉ chấp nhận file .ipa"}), 400
+    temp_path = os.path.join(tempfile.gettempdir(), ipa_file.filename)
+    ipa_file.save(temp_path)
 
-    # Tạo file tạm để xử lý
-    temp_dir = tempfile.mkdtemp()
-    ipa_path = os.path.join(temp_dir, ipa_file.filename)
-    ipa_file.save(ipa_path)
-
-    # Phân tích thông tin IPA
-    info = extract_ipa_info(ipa_path)
+    info = extract_ipa_info(temp_path)
 
     # Random tên file
-    rand_name = secrets.token_urlsafe(6)[:6]
+    ipa_name = "".join(random.choices(string.ascii_lowercase + string.digits, k=6)) + ".ipa"
+    plist_name = ipa_name.replace(".ipa", ".plist")
 
-    ipa_remote_path = f"iPA/{rand_name}.ipa"
-    plist_remote_path = f"Plist/{rand_name}.plist"
+    # Upload IPA lên GitHub
+    with open(temp_path, "rb") as f:
+        ipa_url = upload_to_github(f"iPA/{ipa_name}", f.read())
 
-    # Tạo nội dung file .plist
-    ipa_url = f"https://raw.githubusercontent.com/{info['repo']}/main/{ipa_remote_path}"
-    plist_content = f"""<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>items</key>
-  <array>
+    # Tạo file PLIST
+    plist_content = f"""
+    <?xml version="1.0" encoding="UTF-8"?>
+    <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+    <plist version="1.0">
     <dict>
-      <key>assets</key>
-      <array>
-        <dict>
-          <key>kind</key><string>software-package</string>
-          <key>url</key><string>{ipa_url}</string>
-        </dict>
-      </array>
-      <key>metadata</key>
-      <dict>
-        <key>bundle-identifier</key><string>{info['bundle_id']}</string>
-        <key>bundle-version</key><string>{info['version']}</string>
-        <key>kind</key><string>software</string>
-        <key>title</key><string>{info['app_name']}</string>
-      </dict>
+        <key>items</key>
+        <array>
+            <dict>
+                <key>assets</key>
+                <array>
+                    <dict>
+                        <key>kind</key><string>software-package</string>
+                        <key>url</key><string>{ipa_url}</string>
+                    </dict>
+                </array>
+                <key>metadata</key>
+                <dict>
+                    <key>bundle-identifier</key><string>{info['bundle_id']}</string>
+                    <key>bundle-version</key><string>{info['version']}</string>
+                    <key>kind</key><string>software</string>
+                    <key>title</key><string>{info['app_name']}</string>
+                </dict>
+            </dict>
+        </array>
     </dict>
-  </array>
-</dict>
-</plist>"""
+    </plist>
+    """.strip()
 
-    # Upload IPA và Plist lên GitHub
-    ipa_url_github = upload_to_github(ipa_remote_path, ipa_path)
-    plist_url_github = upload_to_github(plist_remote_path, plist_content.encode())
+    plist_url = upload_to_github(f"Plist/{plist_name}", plist_content)
 
-    # Link cài trực tiếp
-    install_url = f"itms-services://?action=download-manifest&url={plist_url_github}"
-    short_install = shorten_url(install_url)
+    # Link cài trực tiếp (rút gọn)
+    install_url = f"itms-services://?action=download-manifest&url={plist_url}"
+    try:
+        short_url = requests.get(f"https://is.gd/create.php?format=simple&url={install_url}").text
+    except:
+        short_url = install_url
 
-    result = {
+    return jsonify({
         "app_name": info["app_name"],
         "bundle_id": info["bundle_id"],
         "version": info["version"],
         "team_name": info["team_name"],
-        "ipa_url": ipa_url_github,
-        "plist_url": plist_url_github,
-        "install_url": short_install,
-    }
+        "ipa_url": ipa_url,
+        "install_url": short_url
+    })
 
-    return jsonify(result)
+# ==========================================================
+# 2️⃣ ROUTE: /webhook/<BOT_TOKEN>
+# ==========================================================
+@app.route(f"/webhook/{BOT_TOKEN}", methods=["POST"])
+def webhook():
+    try:
+        update = Update.de_json(request.get_json(force=True), telegram_app.bot)
+        telegram_app.update_queue.put_nowait(update)
+    except Exception as e:
+        print("❌ Webhook error:", e)
+    return "OK", 200
 
+# ==========================================================
+# 3️⃣ KHỞI ĐỘNG SERVER + ĐĂNG KÝ WEBHOOK
+# ==========================================================
 if __name__ == "__main__":
+    print("🚀 Starting Flask + Telegram Webhook Server...")
+    # Đăng ký webhook với Telegram
+    res = requests.get(f"https://api.telegram.org/bot{BOT_TOKEN}/setWebhook?url={WEBHOOK_URL}")
+    print("🌍 Webhook set:", res.text)
     app.run(host="0.0.0.0", port=5000)
