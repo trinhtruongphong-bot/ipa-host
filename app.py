@@ -1,37 +1,41 @@
 # ==========================================================
-# app.py — Flask API + Telegram Webhook (Render)
+# app.py — Flask API + Telegram Webhook cho Render
 # ==========================================================
-# - /upload : nhận file IPA, xử lý, upload GitHub
-# - /webhook/<BOT_TOKEN> : nhận update từ Telegram
+# - /upload: nhận file IPA, phân tích, upload GitHub
+# - /webhook/<BOT_TOKEN>: nhận update từ Telegram (Webhook)
+# - Tự động đăng ký webhook khi khởi động
 # ==========================================================
 
 import os
 import tempfile
+import random
+import string
 import requests
 from flask import Flask, request, jsonify
 from telegram import Update
 from telegram.ext import Application
 from ipa_utils import extract_ipa_info
 from github_uploader import upload_to_github
-import base64
-import random
-import string
-import json
 
+# ----------------------------------------------------------
+# 🔧 Cấu hình cơ bản
+# ----------------------------------------------------------
 app = Flask(__name__)
 
-# === ENV CONFIG ===
 BOT_TOKEN = os.getenv("TELEGRAM_TOKEN")
 REPO = os.getenv("GITHUB_REPO")
 BRANCH = os.getenv("GITHUB_BRANCH", "main")
-WEBHOOK_URL = f"https://hehe-aoxt.onrender.com/webhook/{BOT_TOKEN}"  # 👉 thay domain nếu khác
 
-# Tạo Telegram Application (webhook mode)
+# ⚠️ Cập nhật domain theo Render của bạn
+DOMAIN = "https://hehe-aoxt.onrender.com"
+WEBHOOK_URL = f"{DOMAIN}/webhook/{BOT_TOKEN}"
+
+# Khởi tạo Telegram Application
 telegram_app = Application.builder().token(BOT_TOKEN).build()
 
-# ==========================================================
-# 1️⃣ ROUTE: /upload (xử lý IPA)
-# ==========================================================
+# ----------------------------------------------------------
+# 1️⃣ API /upload — nhận file IPA và tạo link tải
+# ----------------------------------------------------------
 @app.route("/upload", methods=["POST"])
 def upload_ipa():
     if "file" not in request.files:
@@ -41,6 +45,7 @@ def upload_ipa():
     temp_path = os.path.join(tempfile.gettempdir(), ipa_file.filename)
     ipa_file.save(temp_path)
 
+    # 🧩 Phân tích IPA
     info = extract_ipa_info(temp_path)
 
     # Random tên file
@@ -98,9 +103,9 @@ def upload_ipa():
         "install_url": short_url
     })
 
-# ==========================================================
-# 2️⃣ ROUTE: /webhook/<BOT_TOKEN>
-# ==========================================================
+# ----------------------------------------------------------
+# 2️⃣ Webhook — nhận tin nhắn Telegram
+# ----------------------------------------------------------
 @app.route(f"/webhook/{BOT_TOKEN}", methods=["POST"])
 def webhook():
     try:
@@ -110,12 +115,23 @@ def webhook():
         print("❌ Webhook error:", e)
     return "OK", 200
 
-# ==========================================================
-# 3️⃣ KHỞI ĐỘNG SERVER + ĐĂNG KÝ WEBHOOK
-# ==========================================================
+# ----------------------------------------------------------
+# 3️⃣ Auto đăng ký webhook khi khởi động
+# ----------------------------------------------------------
+@app.before_first_request
+def set_webhook():
+    try:
+        print("🌍 Đang đăng ký webhook với Telegram ...")
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/setWebhook"
+        data = {"url": WEBHOOK_URL}
+        res = requests.post(url, data=data)
+        print("✅ Kết quả:", res.text)
+    except Exception as e:
+        print("❌ Lỗi setWebhook:", e)
+
+# ----------------------------------------------------------
+# 4️⃣ Chạy server Flask
+# ----------------------------------------------------------
 if __name__ == "__main__":
-    print("🚀 Starting Flask + Telegram Webhook Server...")
-    # Đăng ký webhook với Telegram
-    res = requests.get(f"https://api.telegram.org/bot{BOT_TOKEN}/setWebhook?url={WEBHOOK_URL}")
-    print("🌍 Webhook set:", res.text)
+    print("🚀 Server Flask + Webhook khởi động ...")
     app.run(host="0.0.0.0", port=5000)
