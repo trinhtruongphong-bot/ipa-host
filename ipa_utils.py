@@ -1,13 +1,9 @@
 # ==========================================================
 # ipa_utils.py — Xử lý file IPA
 # ==========================================================
-# Nhiệm vụ:
-# - Giải nén file IPA (thực chất là ZIP)
-# - Đọc Info.plist để lấy:
-#     + CFBundleName (App Name)
-#     + CFBundleIdentifier (Bundle ID)
-#     + CFBundleShortVersionString (Version)
-# - Đọc embedded.mobileprovision để lấy TeamName
+# - Giải nén file IPA
+# - Đọc Info.plist để lấy App name, Bundle ID, Version
+# - Đọc embedded.mobileprovision để lấy Team Name
 # ==========================================================
 
 import os
@@ -15,21 +11,14 @@ import zipfile
 import plistlib
 import re
 import tempfile
-import yaml
-
-CONFIG_PATH = os.path.join(os.path.dirname(__file__), "config.yaml")
 
 def extract_ipa_info(ipa_path):
-    # Đọc config để lấy repo name (cho link GitHub)
-    with open(CONFIG_PATH, "r") as f:
-        config = yaml.safe_load(f)
-    repo = config["github"]["repo"]
+    repo = os.getenv("GITHUB_REPO")
 
     temp_dir = tempfile.mkdtemp()
     with zipfile.ZipFile(ipa_path, "r") as zip_ref:
         zip_ref.extractall(temp_dir)
 
-    # Tìm thư mục Payload
     payload_dir = os.path.join(temp_dir, "Payload")
     app_dir = None
     for item in os.listdir(payload_dir):
@@ -40,7 +29,6 @@ def extract_ipa_info(ipa_path):
     if not app_dir:
         raise Exception("Không tìm thấy thư mục .app trong IPA")
 
-    # Đọc Info.plist
     plist_path = os.path.join(app_dir, "Info.plist")
     with open(plist_path, "rb") as f:
         plist_data = plistlib.load(f)
@@ -49,7 +37,7 @@ def extract_ipa_info(ipa_path):
     bundle_id = plist_data.get("CFBundleIdentifier", "unknown.bundle")
     version = plist_data.get("CFBundleShortVersionString", "1.0")
 
-    # Đọc TeamName từ embedded.mobileprovision
+    # Đọc TeamName
     prov_path = os.path.join(app_dir, "embedded.mobileprovision")
     team_name = "Unknown"
     if os.path.exists(prov_path):
