@@ -1,10 +1,9 @@
 # ==========================================================
-# bot.py — Telegram bot chính (dùng ENV VARS)
+# bot.py — Telegram bot chính (Render version)
 # ==========================================================
-# Các lệnh:
-# - /start, /help, /listipa, /listplist
-# - Nhận & xử lý file IPA, gọi Flask API /upload
-# - Tự xoá tin nhắn tạm sau 30s
+# - Kết nối Flask API https://hehe-aoxt.onrender.com/upload
+# - Chạy Polling, không cần webhook
+# - Tự xoá tin tạm sau 30s
 # ==========================================================
 
 import os
@@ -12,7 +11,6 @@ import time
 import math
 import requests
 import threading
-import asyncio
 from github_uploader import delete_from_github
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -21,8 +19,8 @@ from telegram.ext import (
 )
 
 BOT_TOKEN = os.getenv("TELEGRAM_TOKEN")
-FLASK_URL = "http://localhost:5000/upload"
 REPO = os.getenv("GITHUB_REPO")
+FLASK_URL = "https://hehe-aoxt.onrender.com/upload"  # ✅ dùng domain Render thực tế
 
 def estimate_time(file_size):
     size_mb = file_size / (1024 * 1024)
@@ -71,7 +69,7 @@ async def handle_ipa(update: Update, context: ContextTypes.DEFAULT_TYPE):
         res = requests.post(FLASK_URL, files={"file": f})
 
     if res.status_code != 200:
-        await update.message.reply_text("❌ Lỗi upload IPA.")
+        await update.message.reply_text("❌ Lỗi upload IPA. Kiểm tra server Flask.")
         return
 
     data = res.json()
@@ -87,6 +85,7 @@ async def handle_ipa(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(msg, parse_mode="Markdown", disable_web_page_preview=True)
 
+    # Tự xóa tin nhắn tạm sau 30s
     threading.Thread(
         target=lambda: time.sleep(30) or context.application.create_task(
             context.bot.delete_message(update.message.chat_id, status_msg.message_id)
