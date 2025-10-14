@@ -1,9 +1,9 @@
 # ==========================================================
-# bot.py — Telegram bot chính (Render version)
+# bot.py — Telegram bot chính (Free Plan tối ưu)
 # ==========================================================
-# - Kết nối Flask API https://hehe-aoxt.onrender.com/upload
-# - Chạy Polling, không cần webhook
-# - Tự xoá tin tạm sau 30s
+# - Chạy polling an toàn trong cùng service với Flask
+# - Có delay nhẹ khởi động để Flask ổn định trước
+# - Hạn chế Conflict bằng session_timeout & single polling loop
 # ==========================================================
 
 import os
@@ -11,6 +11,7 @@ import time
 import math
 import requests
 import threading
+import asyncio
 from github_uploader import delete_from_github
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -18,10 +19,13 @@ from telegram.ext import (
     CallbackQueryHandler, ContextTypes, filters
 )
 
+# ===================== Cấu hình =====================
 BOT_TOKEN = os.getenv("TELEGRAM_TOKEN")
 REPO = os.getenv("GITHUB_REPO")
-FLASK_URL = "https://hehe-aoxt.onrender.com/upload"  # ✅ dùng domain Render thực tế
+FLASK_URL = "https://hehe-aoxt.onrender.com/upload"  # Domain Flask Render
+POLL_INTERVAL = 3  # Thời gian chờ giữa mỗi vòng polling
 
+# ===================== Tiện ích =====================
 def estimate_time(file_size):
     size_mb = file_size / (1024 * 1024)
     return math.ceil(5 + size_mb * 3)
@@ -30,11 +34,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
         "👋 Xin chào!\n\n"
         "Gửi file `.ipa` để tôi phân tích và tạo link cài đặt.\n"
-        "Hỗ trợ gửi nhiều file cùng lúc, tôi sẽ xử lý lần lượt.\n\n"
+        "Bạn có thể gửi nhiều file, tôi sẽ xử lý lần lượt.\n\n"
         "🧠 Lệnh có sẵn:\n"
         "/help — Hướng dẫn\n"
-        "/listipa — 10 file IPA gần nhất\n"
-        "/listplist — 10 file PLIST gần nhất"
+        "/listipa — Liệt kê 10 file IPA gần nhất\n"
+        "/listplist — Liệt kê 10 file PLIST gần nhất"
     )
     await update.message.reply_text(text, parse_mode="Markdown")
 
@@ -43,11 +47,12 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📘 Cách dùng:\n"
         "1️⃣ Gửi file .ipa\n"
         "2️⃣ Tôi upload lên GitHub và tạo link cài trực tiếp\n"
-        "3️⃣ Bạn nhận được kết quả chi tiết sau vài chục giây\n\n"
+        "3️⃣ Bạn nhận kết quả sau vài chục giây\n\n"
         "/listipa - Liệt kê file IPA\n"
         "/listplist - Liệt kê file PLIST"
     )
 
+# ===================== Xử lý file IPA =====================
 async def handle_ipa(update: Update, context: ContextTypes.DEFAULT_TYPE):
     file = update.message.document
     if not file.file_name.endswith(".ipa"):
@@ -66,10 +71,14 @@ async def handle_ipa(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
     with open(file_path, "rb") as f:
-        res = requests.post(FLASK_URL, files={"file": f})
+        try:
+            res = requests.post(FLASK_URL, files={"file": f}, timeout=120)
+        except Exception as e:
+            await update.message.reply_text(f"❌ Lỗi kết nối server Flask: {e}")
+            return
 
     if res.status_code != 200:
-        await update.message.reply_text("❌ Lỗi upload IPA. Kiểm tra server Flask.")
+        await update.message.reply_text("❌ Upload thất bại, kiểm tra Flask server.")
         return
 
     data = res.json()
@@ -85,13 +94,13 @@ async def handle_ipa(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(msg, parse_mode="Markdown", disable_web_page_preview=True)
 
-    # Tự xóa tin nhắn tạm sau 30s
     threading.Thread(
         target=lambda: time.sleep(30) or context.application.create_task(
             context.bot.delete_message(update.message.chat_id, status_msg.message_id)
         )
     ).start()
 
+# ===================== Liệt kê file GitHub =====================
 def get_github_files(subdir, limit=10):
     api = f"https://api.github.com/repos/{REPO}/contents/{subdir}"
     res = requests.get(api)
@@ -103,7 +112,7 @@ def get_github_files(subdir, limit=10):
 async def listipa(update: Update, context: ContextTypes.DEFAULT_TYPE):
     files = get_github_files("iPA")
     if not files:
-        await update.message.reply_text("📂 Không có file IPA.")
+        await update.message.reply_text("📂 Không có file IPA nào.")
         return
     buttons = [[InlineKeyboardButton(f"🗑️ {f}", callback_data=f"del_ipa:{f}")] for f in files]
     await update.message.reply_text(
@@ -115,7 +124,7 @@ async def listipa(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def listplist(update: Update, context: ContextTypes.DEFAULT_TYPE):
     files = get_github_files("Plist")
     if not files:
-        await update.message.reply_text("📂 Không có file PLIST.")
+        await update.message.reply_text("📂 Không có file PLIST nào.")
         return
     buttons = [[InlineKeyboardButton(f"🗑️ {f}", callback_data=f"del_plist:{f}")] for f in files]
     await update.message.reply_text(
@@ -137,16 +146,22 @@ async def delete_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = f"✅ Đã xoá file: {fname}" if ok else "❌ Lỗi xoá file GitHub."
     await query.edit_message_text(text)
 
+# ===================== Chạy polling an toàn =====================
 def main():
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
+    print("🚀 Đợi 5s để Flask ổn định...")
+    time.sleep(5)  # đợi Flask server khởi động xong
+
+    app = ApplicationBuilder().token(BOT_TOKEN).read_timeout(30).write_timeout(30).build()
+
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("listipa", listipa))
     app.add_handler(CommandHandler("listplist", listplist))
     app.add_handler(CallbackQueryHandler(delete_callback))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_ipa))
-    print("🤖 Bot đang chạy (Polling)...")
-    app.run_polling()
+
+    print("🤖 Bot đang chạy (Polling an toàn)...")
+    app.run_polling(stop_signals=None, allowed_updates=Update.ALL_TYPES, close_loop=False)
 
 if __name__ == "__main__":
     main()
