@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: ipa-server-bot
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python bot.py
+    plan: free
+    envVars:
+      - key: GITHUB_TOKEN
+        sync: false
+      - key: GITHUB_REPO
+        sync: false
+      - key: GITHUB_BRANCH
+        sync: false
+      - key: TELEGRAM_TOKEN
+        sync: false
