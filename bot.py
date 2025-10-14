@@ -252,10 +252,12 @@ async def handle_file(update, context):
 # =================== MAIN ===================
 if __name__ == "__main__":
     import threading
+    import asyncio
 
     async def startup():
         bot = telegram.Bot(BOT_TOKEN)
         await bot.delete_webhook(drop_pending_updates=True)
+
         app = ApplicationBuilder().token(BOT_TOKEN).build()
         app.add_handler(CommandHandler("start", cmd_start))
         app.add_handler(CommandHandler("help", cmd_help))
@@ -263,8 +265,26 @@ if __name__ == "__main__":
         app.add_handler(CommandHandler("listplist", cmd_listplist))
         app.add_handler(CallbackQueryHandler(handle_delete))
         app.add_handler(MessageHandler(filters.Document.ALL, handle_file))
-        threading.Thread(target=lambda: (requests.get(DOMAIN, timeout=10), time.sleep(50)), daemon=True).start()
-        print("🚀 Bot đang chạy (TeamName + Debug + Auto webhook clear + FixLoop)…")
+
+        threading.Thread(
+            target=lambda: (requests.get(DOMAIN, timeout=10), time.sleep(50)),
+            daemon=True
+        ).start()
+
+        print("🚀 Bot đang chạy (Render-safe async loop)…")
         await app.run_polling()
 
-    asyncio.run(startup())
+    try:
+        # ⚙️ Nếu không có event loop, tạo mới
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            print("⚠️ Existing event loop detected — using it directly.")
+            loop.create_task(startup())
+            loop.run_forever()
+        else:
+            loop.run_until_complete(startup())
+    except RuntimeError:
+        print("⚙️ Creating new event loop manually (Render fix).")
+        new_loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(new_loop)
+        new_loop.run_until_complete(startup())
