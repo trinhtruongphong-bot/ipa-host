@@ -1,10 +1,13 @@
 services:
+  # ===============================
+  # 🧠 SERVICE 1: Flask API
+  # ===============================
   - type: web
-    name: ipa-server-bot
+    name: ipa-api              # 👈 bạn có thể giữ nguyên hoặc đổi tên
     env: python
     plan: free
     buildCommand: pip install -r requirements.txt
-    startCommand: python app.py & python bot.py
+    startCommand: python app.py
     envVars:
       - key: GITHUB_TOKEN
         sync: false
@@ -12,7 +15,22 @@ services:
         sync: false
       - key: GITHUB_BRANCH
         sync: false
+
+  # ===============================
+  # 🤖 SERVICE 2: Telegram Bot
+  # ===============================
+  - type: worker
+    name: ipa-bot
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python bot.py
+    envVars:
       - key: TELEGRAM_TOKEN
         sync: false
-      - key: WEB_CONCURRENCY
-        value: 1   # ✅ ép Render chỉ chạy 1 process duy nhất (fix lỗi xung đột bot)
+      - key: GITHUB_TOKEN
+        sync: false
+      - key: GITHUB_REPO
+        sync: false
+      - key: GITHUB_BRANCH
+        sync: false
