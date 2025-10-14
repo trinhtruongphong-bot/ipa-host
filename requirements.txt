@@ -1,4 +1,3 @@
-Flask==3.0.3
-requests==2.32.3
-python-telegram-bot==20.7
-PyYAML==6.0.2
+pyTelegramBotAPI
+requests
+python-dotenv
