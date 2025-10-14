@@ -14,3 +14,5 @@ services:
         sync: false
       - key: TELEGRAM_TOKEN
         sync: false
+      - key: WEB_CONCURRENCY
+        value: 1
