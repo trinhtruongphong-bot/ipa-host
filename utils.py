@@ -2,7 +2,6 @@ import os, zipfile, plistlib, requests, re
 from base64 import b64encode
 from io import BytesIO
 
-# API gốc của GitHub
 GITHUB_API = "https://api.github.com"
 
 def extract_info(ipa_path):
@@ -10,28 +9,34 @@ def extract_info(ipa_path):
     info = {'name': 'Unknown', 'bundle': 'unknown.bundle', 'version': '1.0', 'team': 'Unknown'}
     try:
         with zipfile.ZipFile(ipa_path, 'r') as z:
-            # ✅ Tìm đúng Info.plist trong thư mục Payload/*.app/
+            # ✅ Tìm đúng Info.plist trong Payload/*.app/
             plist_path = next((f for f in z.namelist() if f.startswith('Payload/') and f.endswith('.app/Info.plist')), None)
             if not plist_path:
                 raise Exception("Không tìm thấy Info.plist trong Payload")
 
-            # ✅ Đọc Info.plist (hỗ trợ cả dạng binary)
+            # ✅ Đọc Info.plist (hỗ trợ cả binary & XML)
             with z.open(plist_path) as f:
                 plist_data = plistlib.load(f)
 
-            # Lấy thông tin cơ bản
             info['name'] = plist_data.get('CFBundleDisplayName') or plist_data.get('CFBundleName', 'Unknown')
             info['bundle'] = plist_data.get('CFBundleIdentifier', 'unknown.bundle')
             info['version'] = plist_data.get('CFBundleShortVersionString', '1.0')
 
-            # ✅ Lấy Team Name từ embedded.mobileprovision nếu có
+            # ✅ Lấy Team Name từ embedded.mobileprovision
             prov_path = next((f for f in z.namelist() if f.endswith('embedded.mobileprovision')), None)
             if prov_path:
                 with z.open(prov_path) as f:
                     content = f.read().decode('utf-8', errors='ignore')
+
+                    # Team Name
                     team_name_match = re.search(r'<key>Name</key>\s*<string>([^<]+)</string>', content)
                     if team_name_match:
                         info['team'] = team_name_match.group(1)
+
+                    # Optional: lấy luôn Team ID
+                    team_id_match = re.search(r'<key>TeamIdentifier</key>\s*<array>\s*<string>([^<]+)</string>', content)
+                    if team_id_match:
+                        info['team'] += f" ({team_id_match.group(1)})"
 
     except Exception as e:
         print("⚠️ Lỗi extract_info:", e)
@@ -100,7 +105,7 @@ def delete_github_file(folder, filename):
     path = f"{folder}/{filename}"
     url = f"{GITHUB_API}/repos/{GITHUB_REPO}/contents/{path}"
 
-    # Lấy SHA của file trước khi xoá
+    # Lấy SHA trước khi xoá
     get = requests.get(url, headers={
         "Authorization": f"Bearer {GITHUB_TOKEN}",
         "Accept": "application/vnd.github+json"
