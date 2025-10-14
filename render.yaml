@@ -1,9 +1,9 @@
 services:
-  - type: worker
-    name: ipa-bot
+  - type: web
+    name: ipa-bot-web
     env: python
     buildCommand: pip install -r requirements.txt
-    startCommand: python bot.py
+    startCommand: python web.py
     envVars:
       - key: BOT_TOKEN
         sync: false
