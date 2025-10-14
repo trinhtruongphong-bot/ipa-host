@@ -1,13 +1,10 @@
 services:
-  # ===============================
-  # 🧠 SERVICE 1: Flask API
-  # ===============================
   - type: web
-    name: ipa-api              # 👈 bạn có thể giữ nguyên hoặc đổi tên
+    name: hehe
     env: python
     plan: free
     buildCommand: pip install -r requirements.txt
-    startCommand: python app.py
+    startCommand: python -u app.py & sleep 5 && python -u bot.py
     envVars:
       - key: GITHUB_TOKEN
         sync: false
@@ -15,22 +12,7 @@ services:
         sync: false
       - key: GITHUB_BRANCH
         sync: false
-
-  # ===============================
-  # 🤖 SERVICE 2: Telegram Bot
-  # ===============================
-  - type: worker
-    name: ipa-bot
-    env: python
-    plan: free
-    buildCommand: pip install -r requirements.txt
-    startCommand: python bot.py
-    envVars:
       - key: TELEGRAM_TOKEN
         sync: false
-      - key: GITHUB_TOKEN
-        sync: false
-      - key: GITHUB_REPO
-        sync: false
-      - key: GITHUB_BRANCH
-        sync: false
+      - key: WEB_CONCURRENCY
+        value: 1
