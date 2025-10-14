@@ -1,115 +1,139 @@
-# ==========================================================
-# bot.py — Logic xử lý Telegram command & file upload
-# ==========================================================
+import telebot, os, tempfile, random, string, plistlib
+from dotenv import load_dotenv
+from utils import extract_info, upload_to_github, shorten_url, list_github_files, delete_github_file
 
-import os
-import time
-import math
-import requests
-from github_uploader import delete_from_github
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import (
-    CommandHandler, MessageHandler, CallbackQueryHandler,
-    ContextTypes, filters
-)
+load_dotenv()
+bot = telebot.TeleBot(os.getenv("BOT_TOKEN"))
+GITHUB_REPO = os.getenv("GITHUB_REPO")
 
-REPO = os.getenv("GITHUB_REPO")
-FLASK_URL = "https://hehe-aoxt.onrender.com/upload"  # Domain Flask
+def random_code(length=5):
+    return ''.join(random.choices(string.ascii_lowercase + string.digits, k=length))
 
-# ==============================
-# Command: /start, /help
-# ==============================
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = (
-        "👋 Xin chào!\n\n"
-        "Gửi file `.ipa` để tôi phân tích và tạo link cài đặt.\n"
-        "Hỗ trợ gửi nhiều file cùng lúc, tôi sẽ xử lý lần lượt.\n\n"
-        "/help — Hướng dẫn\n/listipa — Liệt kê file IPA\n/listplist — Liệt kê file PLIST"
-    )
-    await update.message.reply_text(text, parse_mode="Markdown")
-
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "📘 *Hướng dẫn:*\nGửi file `.ipa`, tôi sẽ upload và tạo link cài trực tiếp.",
-        parse_mode="Markdown"
-    )
-
-# ==============================
-# Upload IPA handler
-# ==============================
-def estimate_time(file_size):
-    size_mb = file_size / (1024 * 1024)
-    return math.ceil(5 + size_mb * 3)
-
-async def handle_ipa(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    doc = update.message.document
-    if not doc.file_name.endswith(".ipa"):
-        await update.message.reply_text("⚠️ Vui lòng gửi đúng file .ipa")
-        return
-
-    file_info = await context.bot.get_file(doc.file_id)
-    path = f"/tmp/{doc.file_name}"
-    await file_info.download_to_drive(path)
-    size = os.path.getsize(path)
-    est = estimate_time(size)
-    status = await update.message.reply_text(f"⏳ Đang xử lý *{doc.file_name}*...\nDự kiến ~{est} giây", parse_mode="Markdown")
-
-    with open(path, "rb") as f:
-        res = requests.post(FLASK_URL, files={"file": f})
-    if res.status_code != 200:
-        await update.message.reply_text("❌ Lỗi khi upload IPA.")
-        return
-
-    d = res.json()
-    text = (
-        f"✅ *Upload hoàn tất!*\n\n"
-        f"📱 *App:* {d['app_name']}\n"
-        f"🆔 *Bundle:* {d['bundle_id']}\n"
-        f"🔢 *Version:* {d['version']}\n"
-        f"👥 *Team:* {d['team_name']}\n\n"
-        f"📦 [Tải IPA]({d['ipa_url']})\n"
-        f"📲 [Cài trực tiếp]({d['install_url']})"
-    )
-    await update.message.reply_text(text, parse_mode="Markdown", disable_web_page_preview=True)
-    time.sleep(30)
+# ----------------- UPLOAD IPA -----------------
+@bot.message_handler(content_types=['document'])
+def handle_ipa(message):
     try:
-        await context.bot.delete_message(update.message.chat_id, status.message_id)
-    except:
-        pass
+        # Tin nhắn tạm
+        temp_msg = bot.send_message(message.chat.id, f"📦 Đang xử lý `{message.document.file_name}`...", parse_mode="Markdown")
 
-# ==============================
-# Danh sách & Xoá file
-# ==============================
-def get_files(subdir, limit=10):
-    api = f"https://api.github.com/repos/{REPO}/contents/{subdir}"
-    res = requests.get(api)
-    if res.status_code != 200:
-        return []
-    files = [f["name"] for f in sorted(res.json(), key=lambda x: x["name"], reverse=True)]
-    return files[:limit]
+        file_info = bot.get_file(message.document.file_id)
+        file_data = bot.download_file(file_info.file_path)
+        code = random_code()
 
-async def listipa(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    files = get_files("iPA")
+        ipa_name = f"{code}.ipa"
+        plist_name = f"{code}.plist"
+        temp_ipa = os.path.join(tempfile.gettempdir(), ipa_name)
+
+        # Lưu file IPA tạm
+        with open(temp_ipa, "wb") as f:
+            f.write(file_data)
+
+        # Phân tích thông tin IPA
+        info = extract_info(temp_ipa)
+        app_name = info.get('name', 'Unknown')
+        bundle = info.get('bundle', 'unknown.bundle')
+        version = info.get('version', '1.0')
+        team = info.get('team', 'Unknown')
+
+        # Upload IPA → iPA/
+        ipa_url = upload_to_github(temp_ipa, folder="iPA", rename=ipa_name)
+
+        # Tạo file plist → plist/
+        temp_plist = os.path.join(tempfile.gettempdir(), plist_name)
+        manifest = {
+            "items": [{
+                "assets": [{"kind": "software-package", "url": ipa_url}],
+                "metadata": {
+                    "bundle-identifier": bundle,
+                    "bundle-version": version,
+                    "kind": "software",
+                    "title": app_name
+                }
+            }]
+        }
+
+        with open(temp_plist, 'wb') as f:
+            plistlib.dump(manifest, f)
+
+        plist_url = upload_to_github(temp_plist, folder="plist", rename=plist_name)
+
+        # Link cài trực tiếp (rút gọn)
+        install_link = f"itms-services://?action=download-manifest&url={plist_url}"
+        short_install = shorten_url(install_link)
+
+        # Gửi kết quả
+        msg = f"""
+✅ **Upload thành công!**
+
+📱 **Tên ứng dụng:** {app_name}
+🆔 **Bundle ID:** `{bundle}`
+🔢 **Phiên bản:** {version}
+👥 **Team:** {team}
+
+📦 [Tải IPA]({ipa_url})
+📲 [Cài trực tiếp]({short_install})
+🆔 Mã tệp: `{code}`
+"""
+        bot.send_message(message.chat.id, msg, parse_mode="Markdown")
+
+        # Xoá tin tạm
+        bot.delete_message(message.chat.id, temp_msg.id)
+
+        # Dọn file tạm
+        os.remove(temp_ipa)
+        os.remove(temp_plist)
+
+    except Exception as e:
+        bot.send_message(message.chat.id, f"❌ Lỗi xử lý IPA: {e}")
+
+# ----------------- LIST FILES -----------------
+@bot.message_handler(commands=['listipa'])
+def list_ipa(message):
+    temp_msg = bot.send_message(message.chat.id, "🔍 Đang tải danh sách iPA...")
+    files = list_github_files("iPA")
+    bot.delete_message(message.chat.id, temp_msg.id)
+
     if not files:
-        await update.message.reply_text("📂 Không có file IPA.")
+        bot.send_message(message.chat.id, "❌ Không tìm thấy file IPA nào.")
         return
-    btns = [[InlineKeyboardButton(f"🗑️ {f}", callback_data=f"del_ipa:{f}")] for f in files]
-    await update.message.reply_text("📦 *File IPA gần nhất:*", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(btns))
 
-async def listplist(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    files = get_files("Plist")
+    for file in files:
+        fname = file['name']
+        url = file['download_url']
+        markup = telebot.types.InlineKeyboardMarkup()
+        markup.add(telebot.types.InlineKeyboardButton("🗑️ Xoá", callback_data=f"del|iPA|{fname}"))
+        bot.send_message(message.chat.id, f"📦 `{fname}`\n🔗 {url}", parse_mode="Markdown", reply_markup=markup)
+
+@bot.message_handler(commands=['listplist'])
+def list_plist(message):
+    temp_msg = bot.send_message(message.chat.id, "🔍 Đang tải danh sách plist...")
+    files = list_github_files("plist")
+    bot.delete_message(message.chat.id, temp_msg.id)
+
     if not files:
-        await update.message.reply_text("📂 Không có file PLIST.")
+        bot.send_message(message.chat.id, "❌ Không tìm thấy file plist nào.")
         return
-    btns = [[InlineKeyboardButton(f"🗑️ {f}", callback_data=f"del_plist:{f}")] for f in files]
-    await update.message.reply_text("📄 *File PLIST gần nhất:*", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(btns))
 
-async def delete_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-    if q.data.startswith("del_ipa:"):
-        fname, path = q.data.split(":", 1)[1], "iPA/" + q.data.split(":", 1)[1]
-    else:
-        fname, path = q.data.split(":", 1)[1], "Plist/" + q.data.split(":", 1)[1]
-    ok = delete_from_github(path)
-    await q.edit_message_text(f"✅ Đã xoá {fname}" if ok else "❌ Lỗi xoá file")
+    for file in files:
+        fname = file['name']
+        url = file['download_url']
+        markup = telebot.types.InlineKeyboardMarkup()
+        markup.add(telebot.types.InlineKeyboardButton("🗑️ Xoá", callback_data=f"del|plist|{fname}"))
+        bot.send_message(message.chat.id, f"🧾 `{fname}`\n🔗 {url}", parse_mode="Markdown", reply_markup=markup)
+
+# ----------------- DELETE FILE -----------------
+@bot.callback_query_handler(func=lambda call: call.data.startswith("del|"))
+def delete_file(call):
+    _, folder, fname = call.data.split("|")
+    try:
+        success = delete_github_file(folder, fname)
+        if success:
+            bot.edit_message_text(chat_id=call.message.chat.id, message_id=call.message.id,
+                                  text=f"🗑️ Đã xoá `{fname}` khỏi `{folder}/`", parse_mode="Markdown")
+        else:
+            bot.answer_callback_query(call.id, "❌ Xoá thất bại hoặc file không tồn tại.")
+    except Exception as e:
+        bot.answer_callback_query(call.id, f"Lỗi xoá file: {e}")
+
+print("🤖 Bot đang chạy...")
+bot.polling(non_stop=True)
