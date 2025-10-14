@@ -1,7 +1,6 @@
-import os, time, base64, random, string, requests, zipfile, asyncio, telegram
+import os, time, base64, random, string, requests, zipfile, asyncio, telegram, nest_asyncio
 from io import BytesIO
 from urllib.parse import quote_plus
-from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters
 
 # =================== CONFIG ===================
@@ -29,7 +28,7 @@ def shorten(url):
         return r.text.strip() if r.ok and r.text.startswith("http") else url
     except: return url
 
-# =================== IPA PARSE ===================
+# =================== IPA PARSING ===================
 def parse_mobileprovision(zf):
     try:
         for name in zf.namelist():
@@ -155,14 +154,24 @@ async def handle_ipa(update, ctx):
         parse_mode="Markdown"
     )
 
-# =================== MAIN ===================
+# =================== MAIN (Render fix) ===================
 if __name__ == "__main__":
+    nest_asyncio.apply()  # vá vòng lặp event loop Render
+
     async def main():
+        bot = telegram.Bot(BOT_TOKEN)
+        await bot.delete_webhook(drop_pending_updates=True)  # auto clear webhook
+
         app = ApplicationBuilder().token(BOT_TOKEN).build()
         app.add_handler(CommandHandler("start", start))
         app.add_handler(CommandHandler("help", help_cmd))
         app.add_handler(MessageHandler(filters.Document.ALL, handle_ipa))
-        print("🚀 Bot đang chạy (phiên bản không fix loop)…")
+
+        # keep alive thread
+        import threading
+        threading.Thread(target=lambda: (requests.get(DOMAIN, timeout=10), time.sleep(50)), daemon=True).start()
+
+        print("🚀 Bot đang chạy (Render version)…")
         await app.run_polling()
 
-    asyncio.run(main())
+    asyncio.get_event_loop().run_until_complete(main())
