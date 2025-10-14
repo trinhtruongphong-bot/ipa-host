@@ -1,4 +1,4 @@
-import os, time, base64, random, string, requests, zipfile, asyncio
+import os, time, base64, random, string, requests, zipfile, asyncio, telegram
 from io import BytesIO
 from urllib.parse import quote_plus
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -17,7 +17,6 @@ PLIST_PATH     = os.getenv("PLIST_DIR", "Plist")
 
 AUTO_DELETE_SECONDS = int(os.getenv("AUTO_DELETE_SECONDS", "30"))
 CDN_SYNC_SECONDS    = int(os.getenv("CDN_SYNC_SECONDS", "30"))
-DEBUG               = os.getenv("DEBUG", "0") == "1"
 
 # =================== UTILS ===================
 def rname(n=6): return ''.join(random.choices(string.ascii_lowercase + string.digits, k=n))
@@ -81,7 +80,6 @@ def extract_info_from_ipa(ipa_bytes: bytes, file_name="Unknown.ipa"):
             team = prov.get("team", team)
             bundle_from_ent = prov.get("bundle_from_entitlements")
 
-            # Dò tất cả Info.plist
             best_meta, best_path, best_score = None, None, -9999
             for path in ipa.namelist():
                 if not path.lower().endswith("info.plist"): continue
@@ -101,7 +99,6 @@ def extract_info_from_ipa(ipa_bytes: bytes, file_name="Unknown.ipa"):
                 bundle  = best_meta.get("CFBundleIdentifier") or bundle
                 version = best_meta.get("CFBundleShortVersionString") or best_meta.get("CFBundleVersion") or version
             else:
-                # Fallback: iTunesMetadata.plist
                 if "iTunesMetadata.plist" in ipa.namelist():
                     from plistlib import loads
                     md = loads(ipa.read("iTunesMetadata.plist"))
@@ -109,7 +106,6 @@ def extract_info_from_ipa(ipa_bytes: bytes, file_name="Unknown.ipa"):
                     bundle = md.get("softwareVersionBundleId") or bundle
                     version= md.get("bundleShortVersionString") or version
 
-            # Nếu vẫn Unknown → lấy theo tên file
             if name == "Unknown" and file_name:
                 name = os.path.splitext(os.path.basename(file_name))[0]
 
@@ -138,7 +134,7 @@ async def github_upload_with_progress(path, raw, msg, label="⬆️ Upload GitHu
     await _edit_progress(msg, label, 100)
     return r.status_code in (200, 201)
 
-# =================== TELEGRAM COMMANDS ===================
+# =================== COMMANDS ===================
 async def cmd_start(update, context):
     msg = await update.message.reply_text("👋 Gửi file `.ipa` để upload và tạo link cài đặt iOS.\nGõ /help để xem hướng dẫn.")
     context.application.create_task(auto_delete(context, msg.chat_id, msg.message_id))
@@ -233,6 +229,14 @@ async def handle_file(update, context):
 # =================== MAIN ===================
 if __name__ == "__main__":
     import threading
+
+    # 🔹 Xóa webhook cũ (tránh lỗi Conflict)
+    async def clear_webhook():
+        bot = telegram.Bot(BOT_TOKEN)
+        await bot.delete_webhook(drop_pending_updates=True)
+
+    asyncio.run(clear_webhook())
+
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("help", cmd_help))
@@ -240,6 +244,7 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("listplist", cmd_listplist))
     app.add_handler(CallbackQueryHandler(handle_delete))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_file))
+
     threading.Thread(target=lambda: (requests.get(DOMAIN, timeout=10), time.sleep(50)), daemon=True).start()
-    print("🚀 Bot đang chạy (TeamName + Fallback phân tích IPA mạnh tay)…")
+    print("🚀 Bot đang chạy (TeamName + Fallback + Auto webhook clear)…")
     app.run_polling()
