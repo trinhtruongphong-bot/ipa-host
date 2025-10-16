@@ -1,10 +1,13 @@
 import telebot, requests, base64, zipfile, plistlib, re, os, random, string, threading, time
-from flask import Flask
+from flask import Flask, request
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 GITHUB_OWNER = os.getenv("GITHUB_OWNER")
 GITHUB_REPO = os.getenv("GITHUB_REPO")
+
+# 🔗 URL public của Koyeb service (sửa dòng này theo URL thực của bạn)
+WEBHOOK_URL = "https://developed-hyena-trinhtruongphong-abb0500e.koyeb.app/"
 
 bot = telebot.TeleBot(BOT_TOKEN)
 
@@ -17,7 +20,6 @@ def upload_with_progress(chat_id, file_path, repo_path, message):
     content_b64 = ""
     msg = bot.send_message(chat_id, f"📤 Đang upload {os.path.basename(file_path)}... 0%")
 
-    # Đọc file theo chunk để hiển thị tiến trình %
     with open(file_path, "rb") as f:
         chunks = []
         while True:
@@ -87,24 +89,19 @@ def process_ipa(message, file_id, file_name):
     local = f"/tmp/{file_name}"
 
     try:
-        # Tải file
+        # Tải file từ Telegram
         info = bot.get_file(file_id)
         file = requests.get(f"https://api.telegram.org/file/bot{BOT_TOKEN}/{info.file_path}")
         with open(local, "wb") as f:
             f.write(file.content)
 
-        # Random ID
         new_id = ''.join(random.choices(string.ascii_lowercase + string.digits, k=5))
         ipa_name, plist_name = f"{new_id}.ipa", f"{new_id}.plist"
-
-        # Phân tích IPA
         meta = parse_ipa(local)
 
-        # Upload IPA
         upload_with_progress(chat_id, local, f"iPA/{ipa_name}", f"Upload {ipa_name}")
         ipa_url = f"https://raw.githubusercontent.com/{GITHUB_OWNER}/{GITHUB_REPO}/main/iPA/{ipa_name}"
 
-        # Tạo và upload PLIST (fix Base64 chuẩn)
         plist_data = generate_plist(ipa_url, meta)
         plist_path = f"/tmp/{plist_name}"
         with open(plist_path, "w", encoding="utf-8") as f:
@@ -112,17 +109,16 @@ def process_ipa(message, file_id, file_name):
         with open(plist_path, "rb") as f:
             plist_b64 = base64.b64encode(f.read()).decode("utf-8")
 
-        plist_url_api = f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/contents/Plist/{plist_name}"
         headers = {"Authorization": f"token {GITHUB_TOKEN}"}
+        url = f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/contents/Plist/{plist_name}"
         data = {"message": f"Upload {plist_name}", "content": plist_b64}
-        r = requests.put(plist_url_api, headers=headers, json=data)
+        r = requests.put(url, headers=headers, json=data)
         if r.status_code not in [200, 201]:
             raise Exception(r.text)
 
         plist_url = f"https://raw.githubusercontent.com/{GITHUB_OWNER}/{GITHUB_REPO}/main/Plist/{plist_name}"
         short = shorten(f"itms-services://?action=download-manifest&url={plist_url}")
 
-        # Kết quả
         msg = (f"✅ Upload hoàn tất!\n\n📱 App: {meta['app_name']}\n🆔 Bundle: {meta['bundle_id']}\n"
                f"🔢 Phiên bản: {meta['version']}\n👥 Team: {meta['team_name']} ({meta['team_id']})\n\n"
                f"📦 Tải IPA: {ipa_url}\n📲 [Cài trực tiếp]({short})")
@@ -166,7 +162,7 @@ def del_file(c):
     else:
         bot.edit_message_text(f"❌ Lỗi khi xoá {name}.", c.message.chat.id, c.message.message_id)
 
-# ========== BẮT FILE ==========
+# ========== NHẬN FILE IPA ==========
 @bot.message_handler(content_types=["document"])
 def handle_file(m):
     threading.Thread(target=process_ipa, args=(m, m.document.file_id, m.document.file_name)).start()
@@ -175,15 +171,23 @@ def handle_file(m):
 def help_msg(m):
     bot.reply_to(m, "👋 Gửi file .ipa để upload.\n/listipa - Danh sách IPA\n/listplist - Danh sách Plist")
 
-# ========== FLASK FIX PORT 8000 ==========
+# ========== FLASK WEBHOOK ==========
 app = Flask(__name__)
+
+@app.route('/', methods=['POST'])
+def webhook():
+    update = telebot.types.Update.de_json(request.data.decode("utf-8"))
+    bot.process_new_updates([update])
+    return "OK", 200
 
 @app.route('/')
 def home():
-    return "Bot is running OK!"
+    return "Bot webhook running."
 
-def run_flask():
+# Thiết lập Webhook
+bot.remove_webhook()
+time.sleep(1)
+bot.set_webhook(url=WEBHOOK_URL)
+
+if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8000)
-
-threading.Thread(target=run_flask).start()
-bot.infinity_polling()
