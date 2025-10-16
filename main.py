@@ -1,4 +1,4 @@
-import telebot, requests, base64, zipfile, plistlib, re, os, random, string, threading, time
+import telebot, requests, base64, zipfile, plistlib, re, os, random, string, threading, time, html
 from flask import Flask, request
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -6,18 +6,17 @@ GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 GITHUB_OWNER = os.getenv("GITHUB_OWNER")
 GITHUB_REPO = os.getenv("GITHUB_REPO")
 
-# ⚙️ URL Webhook (phải có / ở cuối)
 WEBHOOK_URL = "https://developed-hyena-trinhtruongphong-abb0500e.koyeb.app/"
 
 bot = telebot.TeleBot(BOT_TOKEN)
 
-# ========== HÀM GỬI TIN NHẮN DÀI ==========
+# ========== GỬI TIN DÀI ==========
 def send_long_message(chat_id, text, parse_mode="HTML"):
     max_len = 4000
     for i in range(0, len(text), max_len):
         bot.send_message(chat_id, text[i:i+max_len], parse_mode=parse_mode, disable_web_page_preview=True)
 
-# ========== UPLOAD BASE64 CHUẨN ==========
+# ========== UPLOAD CHUẨN BASE64 ==========
 def upload_with_progress(chat_id, file_path, repo_path, message):
     headers = {"Authorization": f"token {GITHUB_TOKEN}"}
     url = f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/contents/{repo_path}"
@@ -88,33 +87,31 @@ def process_ipa(message, file_id, file_name):
     local = f"/tmp/{file_name}"
 
     try:
-        # 🧩 Tải file từ Telegram
         info = bot.get_file(file_id)
         file = requests.get(f"https://api.telegram.org/file/bot{BOT_TOKEN}/{info.file_path}")
         with open(local, "wb") as f:
             f.write(file.content)
 
-        # 🔢 Random ID
         new_id = ''.join(random.choices(string.ascii_lowercase + string.digits, k=5))
         ipa_name, plist_name = f"{new_id}.ipa", f"{new_id}.plist"
 
-        # 📊 Phân tích IPA
         meta = parse_ipa(local)
 
-        # 📤 Upload IPA
         upload_with_progress(chat_id, local, f"iPA/{ipa_name}", f"Upload {ipa_name}")
         ipa_url = f"https://raw.githubusercontent.com/{GITHUB_OWNER}/{GITHUB_REPO}/main/iPA/{ipa_name}"
 
-        # 🧾 Tạo & upload PLIST
         plist_data = generate_plist(ipa_url, meta)
         plist_path = f"/tmp/{plist_name}"
         with open(plist_path, "w", encoding="utf-8") as f:
             f.write(plist_data)
         upload_with_progress(chat_id, plist_path, f"Plist/{plist_name}", f"Upload {plist_name}")
 
-        # 🔗 Rút gọn link
         plist_url = f"https://raw.githubusercontent.com/{GITHUB_OWNER}/{GITHUB_REPO}/main/Plist/{plist_name}"
         short = shorten(f"itms-services://?action=download-manifest&url={plist_url}")
+
+        # Escape URL để không lỗi <a>
+        ipa_url_safe = html.escape(ipa_url)
+        short_safe = html.escape(short)
 
         msg = (
             f"✅ <b>Upload hoàn tất!</b>\n\n"
@@ -122,17 +119,16 @@ def process_ipa(message, file_id, file_name):
             f"🆔 Bundle: <code>{meta['bundle_id']}</code>\n"
             f"🔢 Phiên bản: <b>{meta['version']}</b>\n"
             f"👥 Team: <b>{meta['team_name']}</b> ({meta['team_id']})\n\n"
-            f"📦 <a href='{ipa_url}'>Tải IPA</a>\n"
-            f"📲 <a href='{short}'>Cài trực tiếp</a>"
+            f"📦 <a href='{ipa_url_safe}'>Tải IPA</a>\n"
+            f"📲 <a href='{short_safe}'>Cài trực tiếp</a>"
         )
-
-        send_long_message(chat_id, msg, parse_mode="HTML")
+        send_long_message(chat_id, msg)
 
     except Exception as e:
         err_text = str(e)
         if len(err_text) > 1000:
             err_text = err_text[:1000] + "... (rút gọn)"
-        bot.send_message(chat_id, f"❌ <b>Lỗi:</b> <code>{err_text}</code>", parse_mode="HTML")
+        bot.send_message(chat_id, f"❌ <b>Lỗi:</b> <code>{html.escape(err_text)}</code>", parse_mode="HTML")
 
     finally:
         try:
@@ -165,9 +161,9 @@ def del_file(c):
     r = requests.delete(url, headers={"Authorization": f"token {GITHUB_TOKEN}"},
                         json={"message": f"Delete {name}", "sha": sha})
     if r.status_code == 200:
-        bot.edit_message_text(f"✅ Đã xoá <b>{name}</b> khỏi <b>{folder}</b>.", c.message.chat.id, c.message.message_id, parse_mode="HTML")
+        bot.edit_message_text(f"✅ Đã xoá <b>{html.escape(name)}</b> khỏi <b>{folder}</b>.", c.message.chat.id, c.message.message_id, parse_mode="HTML")
     else:
-        bot.edit_message_text(f"❌ Lỗi khi xoá <b>{name}</b>.", c.message.chat.id, c.message.message_id, parse_mode="HTML")
+        bot.edit_message_text(f"❌ Lỗi khi xoá <b>{html.escape(name)}</b>.", c.message.chat.id, c.message.message_id, parse_mode="HTML")
 
 # ========== LỆNH CƠ BẢN ==========
 @bot.message_handler(content_types=["document"])
