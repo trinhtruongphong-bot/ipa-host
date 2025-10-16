@@ -6,27 +6,29 @@ GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 GITHUB_OWNER = os.getenv("GITHUB_OWNER")
 GITHUB_REPO = os.getenv("GITHUB_REPO")
 
-# ⚙️ Sửa URL này bằng domain thật của bạn trên Koyeb (ví dụ: https://your-bot.koyeb.app/)
+# ⚙️ URL Webhook (phải có / ở cuối)
 WEBHOOK_URL = "https://developed-hyena-trinhtruongphong-abb0500e.koyeb.app/"
 
 bot = telebot.TeleBot(BOT_TOKEN)
 
-# ========== UPLOAD CHUẨN BASE64 (KHÔNG LỖI 422) ==========
+# ========== HÀM GỬI TIN NHẮN DÀI ==========
+def send_long_message(chat_id, text, parse_mode="HTML"):
+    max_len = 4000
+    for i in range(0, len(text), max_len):
+        bot.send_message(chat_id, text[i:i+max_len], parse_mode=parse_mode, disable_web_page_preview=True)
+
+# ========== UPLOAD BASE64 CHUẨN ==========
 def upload_with_progress(chat_id, file_path, repo_path, message):
     headers = {"Authorization": f"token {GITHUB_TOKEN}"}
     url = f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/contents/{repo_path}"
-    file_size = os.path.getsize(file_path)
-    msg = bot.send_message(chat_id, f"📤 Đang upload {os.path.basename(file_path)}... 0%")
+    msg = bot.send_message(chat_id, f"📤 Đang upload <b>{os.path.basename(file_path)}</b>... 0%", parse_mode="HTML")
 
-    # Đọc file 1 lần (đảm bảo Base64 hợp lệ)
     with open(file_path, "rb") as f:
-        data_bytes = f.read()
-        content_b64 = base64.b64encode(data_bytes).decode("utf-8")
+        content_b64 = base64.b64encode(f.read()).decode("utf-8")
 
-    # Hiển thị tiến trình giả lập
     for p in range(0, 101, 25):
         try:
-            bot.edit_message_text(f"📤 Đang upload {os.path.basename(file_path)}... {p}%", chat_id, msg.message_id)
+            bot.edit_message_text(f"📤 Đang upload <b>{os.path.basename(file_path)}</b>... {p}%", chat_id, msg.message_id, parse_mode="HTML")
         except:
             pass
         time.sleep(0.2)
@@ -36,7 +38,7 @@ def upload_with_progress(chat_id, file_path, repo_path, message):
     if r.status_code not in [200, 201]:
         raise Exception(r.text)
 
-    bot.edit_message_text(f"✅ Upload {os.path.basename(file_path)} hoàn tất!", chat_id, msg.message_id)
+    bot.edit_message_text(f"✅ Upload <b>{os.path.basename(file_path)}</b> hoàn tất!", chat_id, msg.message_id, parse_mode="HTML")
     return r.json()["content"]["path"]
 
 # ========== PHÂN TÍCH IPA ==========
@@ -79,45 +81,59 @@ def shorten(url):
     except:
         return url
 
-# ========== XỬ LÝ IPA ==========
+# ========== XỬ LÝ FILE IPA ==========
 def process_ipa(message, file_id, file_name):
     chat_id = message.chat.id
-    processing = bot.send_message(chat_id, f"📦 Đang xử lý {file_name}...")
+    processing = bot.send_message(chat_id, f"📦 Đang xử lý <b>{file_name}</b>...", parse_mode="HTML")
     local = f"/tmp/{file_name}"
 
     try:
-        # Tải file IPA
+        # 🧩 Tải file từ Telegram
         info = bot.get_file(file_id)
         file = requests.get(f"https://api.telegram.org/file/bot{BOT_TOKEN}/{info.file_path}")
         with open(local, "wb") as f:
             f.write(file.content)
 
+        # 🔢 Random ID
         new_id = ''.join(random.choices(string.ascii_lowercase + string.digits, k=5))
         ipa_name, plist_name = f"{new_id}.ipa", f"{new_id}.plist"
 
+        # 📊 Phân tích IPA
         meta = parse_ipa(local)
 
-        # Upload IPA
+        # 📤 Upload IPA
         upload_with_progress(chat_id, local, f"iPA/{ipa_name}", f"Upload {ipa_name}")
         ipa_url = f"https://raw.githubusercontent.com/{GITHUB_OWNER}/{GITHUB_REPO}/main/iPA/{ipa_name}"
 
-        # Tạo & Upload PLIST
+        # 🧾 Tạo & upload PLIST
         plist_data = generate_plist(ipa_url, meta)
         plist_path = f"/tmp/{plist_name}"
         with open(plist_path, "w", encoding="utf-8") as f:
             f.write(plist_data)
         upload_with_progress(chat_id, plist_path, f"Plist/{plist_name}", f"Upload {plist_name}")
 
+        # 🔗 Rút gọn link
         plist_url = f"https://raw.githubusercontent.com/{GITHUB_OWNER}/{GITHUB_REPO}/main/Plist/{plist_name}"
         short = shorten(f"itms-services://?action=download-manifest&url={plist_url}")
 
-        msg = (f"✅ Upload hoàn tất!\n\n📱 App: {meta['app_name']}\n🆔 Bundle: {meta['bundle_id']}\n"
-               f"🔢 Phiên bản: {meta['version']}\n👥 Team: {meta['team_name']} ({meta['team_id']})\n\n"
-               f"📦 Tải IPA: {ipa_url}\n📲 [Cài trực tiếp]({short})")
-        bot.send_message(chat_id, msg, parse_mode="Markdown")
+        msg = (
+            f"✅ <b>Upload hoàn tất!</b>\n\n"
+            f"📱 Ứng dụng: <b>{meta['app_name']}</b>\n"
+            f"🆔 Bundle: <code>{meta['bundle_id']}</code>\n"
+            f"🔢 Phiên bản: <b>{meta['version']}</b>\n"
+            f"👥 Team: <b>{meta['team_name']}</b> ({meta['team_id']})\n\n"
+            f"📦 <a href='{ipa_url}'>Tải IPA</a>\n"
+            f"📲 <a href='{short}'>Cài trực tiếp</a>"
+        )
+
+        send_long_message(chat_id, msg, parse_mode="HTML")
 
     except Exception as e:
-        bot.send_message(chat_id, f"❌ Lỗi: {e}")
+        err_text = str(e)
+        if len(err_text) > 1000:
+            err_text = err_text[:1000] + "... (rút gọn)"
+        bot.send_message(chat_id, f"❌ <b>Lỗi:</b> <code>{err_text}</code>", parse_mode="HTML")
+
     finally:
         try:
             bot.delete_message(chat_id, processing.message_id)
@@ -140,7 +156,7 @@ def list_files(m):
     kb = telebot.types.InlineKeyboardMarkup()
     for f in files:
         kb.add(telebot.types.InlineKeyboardButton(f"🗑 Xoá {f['name']}", callback_data=f"del:{folder}:{f['name']}:{f['sha']}"))
-    bot.send_message(m.chat.id, f"📂 Danh sách file trong {folder}:", reply_markup=kb)
+    bot.send_message(m.chat.id, f"📂 Danh sách file trong <b>{folder}</b>:", parse_mode="HTML", reply_markup=kb)
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("del:"))
 def del_file(c):
@@ -149,9 +165,9 @@ def del_file(c):
     r = requests.delete(url, headers={"Authorization": f"token {GITHUB_TOKEN}"},
                         json={"message": f"Delete {name}", "sha": sha})
     if r.status_code == 200:
-        bot.edit_message_text(f"✅ Đã xoá {name} khỏi {folder}.", c.message.chat.id, c.message.message_id)
+        bot.edit_message_text(f"✅ Đã xoá <b>{name}</b> khỏi <b>{folder}</b>.", c.message.chat.id, c.message.message_id, parse_mode="HTML")
     else:
-        bot.edit_message_text(f"❌ Lỗi khi xoá {name}.", c.message.chat.id, c.message.message_id)
+        bot.edit_message_text(f"❌ Lỗi khi xoá <b>{name}</b>.", c.message.chat.id, c.message.message_id, parse_mode="HTML")
 
 # ========== LỆNH CƠ BẢN ==========
 @bot.message_handler(content_types=["document"])
@@ -160,7 +176,7 @@ def handle_file(m):
 
 @bot.message_handler(commands=["start", "help"])
 def help_msg(m):
-    bot.reply_to(m, "👋 Gửi file .ipa để upload.\n/listipa - Danh sách IPA\n/listplist - Danh sách Plist")
+    bot.reply_to(m, "👋 Gửi file .ipa để upload.\n/listipa - Danh sách IPA\n/listplist - Danh sách Plist", parse_mode="HTML")
 
 # ========== FLASK WEBHOOK ==========
 app = Flask(__name__)
