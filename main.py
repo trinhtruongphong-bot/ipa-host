@@ -6,39 +6,36 @@ GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 GITHUB_OWNER = os.getenv("GITHUB_OWNER")
 GITHUB_REPO = os.getenv("GITHUB_REPO")
 
-# 🔗 URL public của Koyeb service (sửa dòng này theo URL thực của bạn)
-WEBHOOK_URL = "https://developed-hyena-trinhtruongphong-abb0500e.koyeb.app/"
+# ⚙️ Sửa URL này bằng domain thật của bạn trên Koyeb (ví dụ: https://your-bot.koyeb.app/)
+WEBHOOK_URL = "https://your-koyeb-service.koyeb.app/"
 
 bot = telebot.TeleBot(BOT_TOKEN)
 
-# ========== UPLOAD VỚI % TIẾN TRÌNH ==========
+# ========== UPLOAD CHUẨN BASE64 (KHÔNG LỖI 422) ==========
 def upload_with_progress(chat_id, file_path, repo_path, message):
     headers = {"Authorization": f"token {GITHUB_TOKEN}"}
     url = f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/contents/{repo_path}"
     file_size = os.path.getsize(file_path)
-    uploaded = 0
-    content_b64 = ""
     msg = bot.send_message(chat_id, f"📤 Đang upload {os.path.basename(file_path)}... 0%")
 
+    # Đọc file 1 lần (đảm bảo Base64 hợp lệ)
     with open(file_path, "rb") as f:
-        chunks = []
-        while True:
-            chunk = f.read(200_000)
-            if not chunk:
-                break
-            chunks.append(base64.b64encode(chunk).decode("utf-8"))
-            uploaded += len(chunk)
-            percent = int(uploaded / file_size * 100)
-            try:
-                bot.edit_message_text(f"📤 Đang upload {os.path.basename(file_path)}... {percent}%", chat_id, msg.message_id)
-            except:
-                pass
+        data_bytes = f.read()
+        content_b64 = base64.b64encode(data_bytes).decode("utf-8")
 
-    content_b64 = "".join(chunks)
+    # Hiển thị tiến trình giả lập
+    for p in range(0, 101, 25):
+        try:
+            bot.edit_message_text(f"📤 Đang upload {os.path.basename(file_path)}... {p}%", chat_id, msg.message_id)
+        except:
+            pass
+        time.sleep(0.2)
+
     data = {"message": message, "content": content_b64}
     r = requests.put(url, headers=headers, json=data)
     if r.status_code not in [200, 201]:
         raise Exception(r.text)
+
     bot.edit_message_text(f"✅ Upload {os.path.basename(file_path)} hoàn tất!", chat_id, msg.message_id)
     return r.json()["content"]["path"]
 
@@ -89,7 +86,7 @@ def process_ipa(message, file_id, file_name):
     local = f"/tmp/{file_name}"
 
     try:
-        # Tải file từ Telegram
+        # Tải file IPA
         info = bot.get_file(file_id)
         file = requests.get(f"https://api.telegram.org/file/bot{BOT_TOKEN}/{info.file_path}")
         with open(local, "wb") as f:
@@ -97,24 +94,19 @@ def process_ipa(message, file_id, file_name):
 
         new_id = ''.join(random.choices(string.ascii_lowercase + string.digits, k=5))
         ipa_name, plist_name = f"{new_id}.ipa", f"{new_id}.plist"
+
         meta = parse_ipa(local)
 
+        # Upload IPA
         upload_with_progress(chat_id, local, f"iPA/{ipa_name}", f"Upload {ipa_name}")
         ipa_url = f"https://raw.githubusercontent.com/{GITHUB_OWNER}/{GITHUB_REPO}/main/iPA/{ipa_name}"
 
+        # Tạo & Upload PLIST
         plist_data = generate_plist(ipa_url, meta)
         plist_path = f"/tmp/{plist_name}"
         with open(plist_path, "w", encoding="utf-8") as f:
             f.write(plist_data)
-        with open(plist_path, "rb") as f:
-            plist_b64 = base64.b64encode(f.read()).decode("utf-8")
-
-        headers = {"Authorization": f"token {GITHUB_TOKEN}"}
-        url = f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/contents/Plist/{plist_name}"
-        data = {"message": f"Upload {plist_name}", "content": plist_b64}
-        r = requests.put(url, headers=headers, json=data)
-        if r.status_code not in [200, 201]:
-            raise Exception(r.text)
+        upload_with_progress(chat_id, plist_path, f"Plist/{plist_name}", f"Upload {plist_name}")
 
         plist_url = f"https://raw.githubusercontent.com/{GITHUB_OWNER}/{GITHUB_REPO}/main/Plist/{plist_name}"
         short = shorten(f"itms-services://?action=download-manifest&url={plist_url}")
@@ -126,7 +118,6 @@ def process_ipa(message, file_id, file_name):
 
     except Exception as e:
         bot.send_message(chat_id, f"❌ Lỗi: {e}")
-
     finally:
         try:
             bot.delete_message(chat_id, processing.message_id)
@@ -162,7 +153,7 @@ def del_file(c):
     else:
         bot.edit_message_text(f"❌ Lỗi khi xoá {name}.", c.message.chat.id, c.message.message_id)
 
-# ========== NHẬN FILE IPA ==========
+# ========== LỆNH CƠ BẢN ==========
 @bot.message_handler(content_types=["document"])
 def handle_file(m):
     threading.Thread(target=process_ipa, args=(m, m.document.file_id, m.document.file_name)).start()
@@ -184,7 +175,6 @@ def webhook():
 def home():
     return "Bot webhook running."
 
-# Thiết lập Webhook
 bot.remove_webhook()
 time.sleep(1)
 bot.set_webhook(url=WEBHOOK_URL)
