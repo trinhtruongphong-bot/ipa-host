@@ -7,7 +7,7 @@ GITHUB_OWNER = os.getenv("GITHUB_OWNER")
 GITHUB_REPO = os.getenv("GITHUB_REPO")
 
 # ⚙️ Sửa URL này bằng domain thật của bạn trên Koyeb (ví dụ: https://your-bot.koyeb.app/)
-WEBHOOK_URL = "https://your-koyeb-service.koyeb.app/"
+WEBHOOK_URL = "https://developed-hyena-trinhtruongphong-abb0500e.koyeb.app/"
 
 bot = telebot.TeleBot(BOT_TOKEN)
 
