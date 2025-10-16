@@ -16,18 +16,23 @@ def upload_with_progress(chat_id, file_path, repo_path, message):
     uploaded = 0
     content_b64 = ""
     msg = bot.send_message(chat_id, f"📤 Đang upload {os.path.basename(file_path)}... 0%")
+
+    # Đọc file theo chunk để hiển thị tiến trình %
     with open(file_path, "rb") as f:
+        chunks = []
         while True:
             chunk = f.read(200_000)
             if not chunk:
                 break
-            content_b64 += base64.b64encode(chunk).decode("utf-8")
+            chunks.append(base64.b64encode(chunk).decode("utf-8"))
             uploaded += len(chunk)
             percent = int(uploaded / file_size * 100)
             try:
                 bot.edit_message_text(f"📤 Đang upload {os.path.basename(file_path)}... {percent}%", chat_id, msg.message_id)
             except:
                 pass
+
+    content_b64 = "".join(chunks)
     data = {"message": message, "content": content_b64}
     r = requests.put(url, headers=headers, json=data)
     if r.status_code not in [200, 201]:
@@ -79,34 +84,60 @@ def shorten(url):
 def process_ipa(message, file_id, file_name):
     chat_id = message.chat.id
     processing = bot.send_message(chat_id, f"📦 Đang xử lý {file_name}...")
+    local = f"/tmp/{file_name}"
+
     try:
+        # Tải file
         info = bot.get_file(file_id)
         file = requests.get(f"https://api.telegram.org/file/bot{BOT_TOKEN}/{info.file_path}")
-        local = f"/tmp/{file_name}"
-        open(local, "wb").write(file.content)
+        with open(local, "wb") as f:
+            f.write(file.content)
+
+        # Random ID
         new_id = ''.join(random.choices(string.ascii_lowercase + string.digits, k=5))
         ipa_name, plist_name = f"{new_id}.ipa", f"{new_id}.plist"
+
+        # Phân tích IPA
         meta = parse_ipa(local)
+
+        # Upload IPA
         upload_with_progress(chat_id, local, f"iPA/{ipa_name}", f"Upload {ipa_name}")
         ipa_url = f"https://raw.githubusercontent.com/{GITHUB_OWNER}/{GITHUB_REPO}/main/iPA/{ipa_name}"
+
+        # Tạo và upload PLIST (fix Base64 chuẩn)
         plist_data = generate_plist(ipa_url, meta)
         plist_path = f"/tmp/{plist_name}"
-        open(plist_path, "w").write(plist_data)
-        upload_with_progress(chat_id, plist_path, f"Plist/{plist_name}", f"Upload {plist_name}")
+        with open(plist_path, "w", encoding="utf-8") as f:
+            f.write(plist_data)
+        with open(plist_path, "rb") as f:
+            plist_b64 = base64.b64encode(f.read()).decode("utf-8")
+
+        plist_url_api = f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/contents/Plist/{plist_name}"
+        headers = {"Authorization": f"token {GITHUB_TOKEN}"}
+        data = {"message": f"Upload {plist_name}", "content": plist_b64}
+        r = requests.put(plist_url_api, headers=headers, json=data)
+        if r.status_code not in [200, 201]:
+            raise Exception(r.text)
+
         plist_url = f"https://raw.githubusercontent.com/{GITHUB_OWNER}/{GITHUB_REPO}/main/Plist/{plist_name}"
         short = shorten(f"itms-services://?action=download-manifest&url={plist_url}")
+
+        # Kết quả
         msg = (f"✅ Upload hoàn tất!\n\n📱 App: {meta['app_name']}\n🆔 Bundle: {meta['bundle_id']}\n"
                f"🔢 Phiên bản: {meta['version']}\n👥 Team: {meta['team_name']} ({meta['team_id']})\n\n"
                f"📦 Tải IPA: {ipa_url}\n📲 [Cài trực tiếp]({short})")
         bot.send_message(chat_id, msg, parse_mode="Markdown")
+
     except Exception as e:
         bot.send_message(chat_id, f"❌ Lỗi: {e}")
+
     finally:
         try:
             bot.delete_message(chat_id, processing.message_id)
         except:
             pass
-        if os.path.exists(local): os.remove(local)
+        if os.path.exists(local):
+            os.remove(local)
 
 # ========== DANH SÁCH + XOÁ FILE ==========
 @bot.message_handler(commands=["listipa", "listplist"])
@@ -135,7 +166,7 @@ def del_file(c):
     else:
         bot.edit_message_text(f"❌ Lỗi khi xoá {name}.", c.message.chat.id, c.message.message_id)
 
-# ========== XỬ LÝ FILE IPA ==========
+# ========== BẮT FILE ==========
 @bot.message_handler(content_types=["document"])
 def handle_file(m):
     threading.Thread(target=process_ipa, args=(m, m.document.file_id, m.document.file_name)).start()
@@ -144,7 +175,7 @@ def handle_file(m):
 def help_msg(m):
     bot.reply_to(m, "👋 Gửi file .ipa để upload.\n/listipa - Danh sách IPA\n/listplist - Danh sách Plist")
 
-# ========== FLASK ẢO CHO KOYEB ==========
+# ========== FLASK FIX PORT 8000 ==========
 app = Flask(__name__)
 
 @app.route('/')
