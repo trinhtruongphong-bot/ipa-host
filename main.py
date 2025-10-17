@@ -33,6 +33,7 @@ def upload_with_progress(chat_id, file_path, repo_path, message):
     headers = {"Authorization": f"token {GITHUB_TOKEN}"}
     url = f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/contents/{repo_path}"
 
+    # Kiểm tra file đã tồn tại chưa
     sha = None
     check = requests.get(url, headers=headers)
     if check.status_code == 200:
@@ -54,6 +55,7 @@ def upload_with_progress(chat_id, file_path, repo_path, message):
     if sha:
         data["sha"] = sha
 
+    # Tự động retry nếu lỗi mạng
     for attempt in range(3):
         try:
             r = requests.put(url, headers=headers, json=data, timeout=120)
@@ -69,28 +71,36 @@ def upload_with_progress(chat_id, file_path, repo_path, message):
                 raise e
 
     bot.edit_message_text(f"✅ Upload <b>{os.path.basename(file_path)}</b> hoàn tất!", chat_id, msg.message_id, parse_mode="HTML")
+    # Tự xoá tin nhắn sau 30s
+    threading.Timer(30.0, lambda: bot.delete_message(chat_id, msg.message_id)).start()
     return r.json()["content"]["path"]
 
-# ========= PHÂN TÍCH FILE IPA (chỉ lấy Info.plist trong .app) =========
+# ========= PHÂN TÍCH FILE IPA =========
 def parse_ipa(file_path):
     info = {"app_name": "", "bundle_id": "", "version": "", "error": None}
     try:
         with zipfile.ZipFile(file_path, 'r') as z:
-            # 🔍 Chỉ chọn Info.plist trong thư mục .app
+            # 🔍 Chỉ lấy Info.plist trong .app, bỏ qua .bundle/.framework/PlugIns/Watch
             plist_file = [
                 f for f in z.namelist()
-                if f.endswith("Info.plist") and ".app/" in f and "Payload/" in f
+                if f.endswith("Info.plist")
+                and "Payload/" in f
+                and ".app/" in f
+                and not any(skip in f for skip in [".bundle/", ".framework/", "PlugIns/", "Watch/"])
             ]
+
             if not plist_file:
-                info["error"] = "Không tìm thấy Info.plist trong .app"
+                info["error"] = "Không tìm thấy Info.plist hợp lệ trong .app"
                 return info
 
-            with z.open(plist_file[0]) as f:
+            plist_path = plist_file[0]
+            with z.open(plist_path) as f:
                 data = f.read()
                 try:
                     p = plistlib.loads(data)
                 except Exception:
                     try:
+                        # fallback nếu binary
                         with tempfile.NamedTemporaryFile(delete=False) as tmp:
                             tmp.write(data)
                             tmp.flush()
@@ -105,6 +115,7 @@ def parse_ipa(file_path):
                 info["app_name"] = p.get("CFBundleDisplayName") or p.get("CFBundleName") or ""
                 info["bundle_id"] = p.get("CFBundleIdentifier") or ""
                 info["version"] = p.get("CFBundleShortVersionString") or ""
+
     except Exception as e:
         info["error"] = f"Lỗi khi đọc IPA: {str(e)}"
     return info
