@@ -73,13 +73,6 @@ def generate_plist(ipa_url, info):
 <key>kind</key><string>software</string><key>title</key><string>{info['app_name']}</string>
 </dict></dict></array></dict></plist>"""
 
-# ========= RÚT GỌN LINK =========
-def shorten(url):
-    try:
-        return requests.get("https://is.gd/create.php", params={"format": "simple", "url": url}).text.strip()
-    except:
-        return url
-
 # ========= XỬ LÝ FILE IPA =========
 def process_ipa(message, file_id, file_name):
     chat_id = message.chat.id
@@ -107,7 +100,7 @@ def process_ipa(message, file_id, file_name):
         upload_with_progress(chat_id, plist_path, f"Plist/{plist_name}", f"Upload {plist_name}")
 
         plist_url = f"https://raw.githubusercontent.com/{GITHUB_OWNER}/{GITHUB_REPO}/main/Plist/{plist_name}"
-        short = shorten(f"itms-services://?action=download-manifest&url={plist_url}")
+        short = f"itms-services://?action=download-manifest&url={plist_url}"  # ❗Không rút gọn nữa
 
         msg = (
             f"✅ <b>Upload hoàn tất!</b>\n\n"
