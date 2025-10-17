@@ -14,7 +14,13 @@ bot = telebot.TeleBot(BOT_TOKEN)
 def send_long_message(chat_id, text, parse_mode="HTML", reply_markup=None):
     max_len = 4000
     for i in range(0, len(text), max_len):
-        bot.send_message(chat_id, text[i:i+max_len], parse_mode=parse_mode, disable_web_page_preview=True, reply_markup=reply_markup if i == 0 else None)
+        bot.send_message(
+            chat_id,
+            text[i:i+max_len],
+            parse_mode=parse_mode,
+            disable_web_page_preview=True,
+            reply_markup=reply_markup if i == 0 else None
+        )
 
 # ========= UPLOAD FILE LÊN GITHUB =========
 def upload_with_progress(chat_id, file_path, repo_path, message):
@@ -27,7 +33,12 @@ def upload_with_progress(chat_id, file_path, repo_path, message):
 
     for p in range(0, 101, 25):
         try:
-            bot.edit_message_text(f"📤 Đang upload <b>{os.path.basename(file_path)}</b>... {p}%", chat_id, msg.message_id, parse_mode="HTML")
+            bot.edit_message_text(
+                f"📤 Đang upload <b>{os.path.basename(file_path)}</b>... {p}%",
+                chat_id,
+                msg.message_id,
+                parse_mode="HTML"
+            )
         except:
             pass
         time.sleep(0.2)
@@ -37,12 +48,23 @@ def upload_with_progress(chat_id, file_path, repo_path, message):
     if r.status_code not in [200, 201]:
         raise Exception(r.text)
 
-    bot.edit_message_text(f"✅ Upload <b>{os.path.basename(file_path)}</b> hoàn tất!", chat_id, msg.message_id, parse_mode="HTML")
+    bot.edit_message_text(
+        f"✅ Upload <b>{os.path.basename(file_path)}</b> hoàn tất!",
+        chat_id,
+        msg.message_id,
+        parse_mode="HTML"
+    )
     return r.json()["content"]["path"]
 
 # ========= PHÂN TÍCH FILE IPA =========
 def parse_ipa(file_path):
-    info = {"app_name": "Unknown", "bundle_id": "Unknown", "version": "Unknown", "team_name": "Unknown", "team_id": "Unknown"}
+    info = {
+        "app_name": "Unknown",
+        "bundle_id": "Unknown",
+        "version": "Unknown",
+        "team_name": "Unknown",
+        "team_id": "Unknown"
+    }
     with zipfile.ZipFile(file_path, 'r') as z:
         plist_file = [f for f in z.namelist() if f.endswith("Info.plist") and "Payload/" in f]
         if plist_file:
@@ -91,7 +113,7 @@ def process_ipa(message, file_id, file_name):
         meta = parse_ipa(local)
 
         upload_with_progress(chat_id, local, f"iPA/{ipa_name}", f"Upload {ipa_name}")
-        ipa_url = f"https://raw.githubusercontent.com/{GITHUB_OWNER}/{GITHUB_REPO}/main/iPA/{ipa_name}"
+        ipa_url = f"https://github.com/{GITHUB_OWNER}/{GITHUB_REPO}/blob/main/iPA/{ipa_name}?raw=true"  # ✅ FIX
 
         plist_data = generate_plist(ipa_url, meta)
         plist_path = f"/tmp/{plist_name}"
@@ -100,7 +122,7 @@ def process_ipa(message, file_id, file_name):
         upload_with_progress(chat_id, plist_path, f"Plist/{plist_name}", f"Upload {plist_name}")
 
         plist_url = f"https://raw.githubusercontent.com/{GITHUB_OWNER}/{GITHUB_REPO}/main/Plist/{plist_name}"
-        short = f"itms-services://?action=download-manifest&url={plist_url}"  # ❗Không rút gọn nữa
+        short = f"itms-services://?action=download-manifest&url={plist_url}"
 
         msg = (
             f"✅ <b>Upload hoàn tất!</b>\n\n"
@@ -136,8 +158,10 @@ def process_ipa(message, file_id, file_name):
 @bot.message_handler(commands=["listipa", "listplist"])
 def list_files(m):
     folder = "iPA" if m.text == "/listipa" else "Plist"
-    r = requests.get(f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/contents/{folder}",
-                     headers={"Authorization": f"token {GITHUB_TOKEN}"})
+    r = requests.get(
+        f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/contents/{folder}",
+        headers={"Authorization": f"token {GITHUB_TOKEN}"}
+    )
     if r.status_code != 200:
         return bot.reply_to(m, "❌ Không thể lấy danh sách.")
     files = [f for f in r.json() if f["name"].endswith(".ipa") or f["name"].endswith(".plist")]
@@ -152,8 +176,11 @@ def list_files(m):
 def del_file(c):
     _, folder, name, sha = c.data.split(":")
     url = f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/contents/{folder}/{name}"
-    r = requests.delete(url, headers={"Authorization": f"token {GITHUB_TOKEN}"},
-                        json={"message": f"Delete {name}", "sha": sha})
+    r = requests.delete(
+        url,
+        headers={"Authorization": f"token {GITHUB_TOKEN}"},
+        json={"message": f"Delete {name}", "sha": sha}
+    )
     if r.status_code == 200:
         bot.edit_message_text(f"✅ Đã xoá <b>{html.escape(name)}</b> khỏi <b>{folder}</b>.", c.message.chat.id, c.message.message_id, parse_mode="HTML")
     else:
