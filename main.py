@@ -12,34 +12,17 @@ WEBHOOK_URL = "https://developed-hyena-trinhtruongphong-abb0500e.koyeb.app/"
 
 bot = telebot.TeleBot(BOT_TOKEN)
 
-# ========= RÚT GỌN LINK (TinyURL + CleanURI fallback) =========
+# ========= RÚT GỌN LINK (Chỉ dùng CleanURI) =========
 def shorten(url):
     try:
-        # 1️⃣ Thử TinyURL trước (ổn định & vĩnh viễn)
-        api_url = "https://api.tinyurl.com/create"
-        headers = {"Content-Type": "application/json"}
-        payload = {"url": url}
-        res = requests.post(api_url, json=payload, headers=headers, timeout=10)
+        res = requests.post("https://cleanuri.com/api/v1/shorten", data={"url": url}, timeout=10)
         if res.status_code == 200:
             data = res.json()
-            if "data" in data and "tiny_url" in data["data"]:
-                return data["data"]["tiny_url"]
-            elif "tiny_url" in data:
-                return data["tiny_url"]
-
-        print("⚠️ TinyURL lỗi, thử CleanURI...")
-
-        # 2️⃣ Nếu TinyURL lỗi, thử CleanURI
-        res2 = requests.post("https://cleanuri.com/api/v1/shorten", data={"url": url}, timeout=10)
-        if res2.status_code == 200 and "result_url" in res2.json():
-            return res2.json()["result_url"]
-
-        print(f"⚠️ CleanURI cũng lỗi, dùng link gốc.")
-        return url
-
+            if "result_url" in data:
+                return data["result_url"]
     except Exception as e:
         print(f"❌ Lỗi shorten(): {e}")
-        return url
+    return url
 
 # ========= UPLOAD FILE LÊN GITHUB =========
 def upload_with_progress(chat_id, file_path, repo_path, message):
@@ -77,7 +60,6 @@ def parse_ipa(file_path):
 
     try:
         with zipfile.ZipFile(file_path, 'r') as z:
-            # ✅ Đọc Info.plist đúng trong .app
             plist_files = [f for f in z.namelist() if f.startswith("Payload/") and f.endswith(".app/Info.plist")]
             if not plist_files:
                 info["error"] = "Không tìm thấy Info.plist trong .app"
@@ -86,7 +68,6 @@ def parse_ipa(file_path):
             plist_path = plist_files[0]
             data = z.read(plist_path)
 
-            # Giải mã Info.plist
             try:
                 plist = plistlib.loads(data)
             except Exception:
@@ -113,7 +94,6 @@ def parse_ipa(file_path):
             info["bundle_id"] = plist.get("CFBundleIdentifier")
             info["version"] = plist.get("CFBundleShortVersionString")
 
-            # ✅ Lấy Team Name + Team ID
             embedded_files = [f for f in z.namelist() if f.endswith(".app/embedded.mobileprovision")]
             if embedded_files:
                 emb_data = z.read(embedded_files[0]).decode("utf-8", errors="ignore")
