@@ -1,3 +1,4 @@
-pyTelegramBotAPI
-requests
-flask
+Flask==3.0.3
+pyTelegramBotAPI==4.16.1
+requests==2.31.0
+biplist==1.0.3
