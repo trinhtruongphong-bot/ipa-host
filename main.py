@@ -8,6 +8,7 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 GITHUB_OWNER = os.getenv("GITHUB_OWNER")
 GITHUB_REPO = os.getenv("GITHUB_REPO")
+USE_WEBHOOK = os.getenv("USE_WEBHOOK", "True").lower() == "true"
 
 bot = telebot.TeleBot(BOT_TOKEN)
 app = Flask(__name__)
@@ -203,7 +204,7 @@ def handle_docs(message):
     else:
         bot.reply_to(message, "❌ Vui lòng gửi đúng định dạng .ipa")
 
-# ========== FLASK WEBHOOK ==========
+# ========== FLASK + FALLBACK POLLING ==========
 
 @app.route(f"/{BOT_TOKEN}", methods=['POST'])
 def webhook():
@@ -215,4 +216,9 @@ def home():
     return "Bot đang chạy ngon 🍀"
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=8000)
+    if USE_WEBHOOK:
+        print("🚀 Chạy chế độ Webhook (Flask)")
+        app.run(host='0.0.0.0', port=8000)
+    else:
+        print("💻 Chạy chế độ Polling (Local test)")
+        bot.infinity_polling()
