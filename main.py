@@ -1,4 +1,4 @@
-import telebot, requests, base64, zipfile, plistlib, os, random, string, threading, time, html, tempfile, subprocess
+import telebot, requests, base64, zipfile, plistlib, os, random, string, threading, time, html, tempfile, subprocess, re
 from flask import Flask, request
 
 # ========= CONFIG =========
@@ -52,12 +52,13 @@ def upload_with_progress(chat_id, file_path, repo_path, message):
     threading.Timer(30.0, lambda: bot.delete_message(chat_id, msg.message_id)).start()
     return r.json()["content"]["path"]
 
-# ========= PHÂN TÍCH FILE IPA =========
+# ========= PHÂN TÍCH FILE IPA (ĐỌC 100% + TEAM NAME) =========
 def parse_ipa(file_path):
-    info = {"app_name": None, "bundle_id": None, "version": None, "error": None}
+    info = {"app_name": None, "bundle_id": None, "version": None, "team_name": None, "team_id": None, "error": None}
+
     try:
         with zipfile.ZipFile(file_path, 'r') as z:
-            # ✅ Chỉ đọc đúng file Payload/.../.app/Info.plist
+            # ✅ Chỉ đọc đúng Info.plist trong .app
             plist_files = [f for f in z.namelist() if f.startswith("Payload/") and f.endswith(".app/Info.plist")]
             if not plist_files:
                 info["error"] = "Không tìm thấy Info.plist trong .app"
@@ -66,6 +67,7 @@ def parse_ipa(file_path):
             plist_path = plist_files[0]
             data = z.read(plist_path)
 
+            # --- Giải mã Info.plist ---
             try:
                 plist = plistlib.loads(data)
             except Exception:
@@ -86,12 +88,28 @@ def parse_ipa(file_path):
                             return info
                         finally:
                             os.remove(tmp.name)
-                            if os.path.exists(xml_path):
-                                os.remove(xml_path)
+                            if os.path.exists(xml_path): os.remove(xml_path)
 
             info["app_name"] = plist.get("CFBundleDisplayName") or plist.get("CFBundleName")
             info["bundle_id"] = plist.get("CFBundleIdentifier")
             info["version"] = plist.get("CFBundleShortVersionString")
+
+            # ✅ Đọc Team Name + Team ID từ embedded.mobileprovision
+            embedded_files = [f for f in z.namelist() if f.endswith(".app/embedded.mobileprovision")]
+            if embedded_files:
+                emb_path = embedded_files[0]
+                emb_data = z.read(emb_path).decode("utf-8", errors="ignore")
+                match = re.search(r"<plist.*?</plist>", emb_data, re.DOTALL)
+                if match:
+                    plist_xml = match.group(0).encode("utf-8")
+                    try:
+                        emb_plist = plistlib.loads(plist_xml)
+                        info["team_name"] = emb_plist.get("TeamName")
+                        team_ids = emb_plist.get("TeamIdentifier")
+                        if isinstance(team_ids, list) and len(team_ids) > 0:
+                            info["team_id"] = team_ids[0]
+                    except Exception:
+                        pass
 
             if not all([info["app_name"], info["bundle_id"], info["version"]]):
                 info["error"] = "Không thể đọc đầy đủ metadata trong Info.plist"
@@ -149,7 +167,9 @@ def process_ipa(message, file_id, file_name):
             f"✅ <b>Upload hoàn tất!</b>\n\n"
             f"📱 Ứng dụng: <b>{meta['app_name']}</b>\n"
             f"🆔 Bundle: <code>{meta['bundle_id']}</code>\n"
-            f"🔢 Phiên bản: <b>{meta['version']}</b>\n\n"
+            f"🔢 Phiên bản: <b>{meta['version']}</b>\n"
+            f"👥 Team: <b>{meta.get('team_name') or 'Không rõ'}</b> "
+            f"(<code>{meta.get('team_id') or 'Không rõ'}</code>)\n\n"
             f"📦 <b>Tải IPA:</b>\n{ipa_url}\n\n"
             f"📲 <b>Cài trực tiếp:</b>\n{short}"
         )
@@ -173,7 +193,7 @@ def handle_file(m):
 
 @bot.message_handler(commands=["start", "help"])
 def start_help(m):
-    bot.reply_to(m, "👋 Gửi file .ipa để tạo link cài đặt.\nTự động phân tích Info.plist và tạo link iOS.", parse_mode="HTML")
+    bot.reply_to(m, "👋 Gửi file .ipa để tạo link cài đặt.\nTự động đọc Info.plist + Team Name, upload lên GitHub và tạo link iOS.", parse_mode="HTML")
 
 # ========= FLASK WEBHOOK =========
 app = Flask(__name__)
