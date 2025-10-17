@@ -6,6 +6,8 @@ GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 GITHUB_OWNER = os.getenv("GITHUB_OWNER")
 GITHUB_REPO = os.getenv("GITHUB_REPO")
 
+# 🌐 Domain riêng của bạn
+CUSTOM_DOMAIN = "https://download.khoindvn.io.vn"
 WEBHOOK_URL = "https://developed-hyena-trinhtruongphong-abb0500e.koyeb.app/"
 
 bot = telebot.TeleBot(BOT_TOKEN)
@@ -112,16 +114,17 @@ def process_ipa(message, file_id, file_name):
         meta = parse_ipa(local)
 
         upload_with_progress(chat_id, local, f"iPA/{ipa_name}", f"Upload {ipa_name}")
-        ipa_url = f"https://github.com/{GITHUB_OWNER}/{GITHUB_REPO}/blob/main/iPA/{ipa_name}?raw=true"
+
+        # 🔗 Dùng domain riêng thay vì GitHub raw
+        ipa_url = f"{CUSTOM_DOMAIN}/iPA/{ipa_name}"
+        plist_url = f"{CUSTOM_DOMAIN}/Plist/{plist_name}"
+        short = f"itms-services://?action=download-manifest&url={plist_url}"
 
         plist_data = generate_plist(ipa_url, meta)
         plist_path = f"/tmp/{plist_name}"
         with open(plist_path, "w", encoding="utf-8") as f:
             f.write(plist_data)
         upload_with_progress(chat_id, plist_path, f"Plist/{plist_name}", f"Upload {plist_name}")
-
-        plist_url = f"https://raw.githubusercontent.com/{GITHUB_OWNER}/{GITHUB_REPO}/main/Plist/{plist_name}"
-        short = f"itms-services://?action=download-manifest&url={plist_url}"
 
         msg = (
             f"✅ <b>Upload hoàn tất!</b>\n\n"
