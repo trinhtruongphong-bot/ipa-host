@@ -1,73 +1,65 @@
-import telebot, requests, base64, zipfile, plistlib, os, random, string, threading, time, html, tempfile, subprocess, re
+import os, io, zipfile, plistlib, tempfile, subprocess, re, requests, base64, random, string, threading
 from flask import Flask, request
+import telebot
+from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-# ========= CONFIG =========
+# --- ENV ---
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 GITHUB_OWNER = os.getenv("GITHUB_OWNER")
 GITHUB_REPO = os.getenv("GITHUB_REPO")
 
-CUSTOM_DOMAIN = "https://download.khoindvn.io.vn"
-WEBHOOK_URL = "https://developed-hyena-trinhtruongphong-abb0500e.koyeb.app/"
-
 bot = telebot.TeleBot(BOT_TOKEN)
+app = Flask(__name__)
 
-# ========= RÚT GỌN LINK =========
+# ========== UTILS ==========
+
+def random_string(n=5):
+    return ''.join(random.choices(string.ascii_lowercase + string.digits, k=n))
+
 def shorten(url):
+    """Rút gọn link (hỗ trợ itms-services://)"""
     try:
-        r = requests.get(f"https://is.gd/create.php?format=simple&url={url}", timeout=10)
+        encoded = requests.utils.quote(url, safe="")
+        r = requests.get(f"https://is.gd/create.php?format=simple&url={encoded}", timeout=10)
         if r.status_code == 200 and r.text.startswith("http"):
             return r.text.strip()
-    except:
-        pass
+    except Exception as e:
+        print("Shorten error:", e)
     return url
 
-# ========= UPLOAD FILE LÊN GITHUB =========
-def upload_with_progress(chat_id, file_path, repo_path, message):
-    headers = {"Authorization": f"token {GITHUB_TOKEN}"}
-    url = f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/contents/{repo_path}"
-
-    sha = None
-    check = requests.get(url, headers=headers)
-    if check.status_code == 200:
-        sha = check.json().get("sha")
-
-    msg = bot.send_message(chat_id, f"📤 Đang upload <b>{os.path.basename(file_path)}</b>... 0%", parse_mode="HTML")
-    with open(file_path, "rb") as f:
-        content_b64 = base64.b64encode(f.read()).decode("utf-8")
-
-    for p in range(0, 101, 25):
-        try:
-            bot.edit_message_text(f"📤 Đang upload <b>{os.path.basename(file_path)}</b>... {p}%", chat_id, msg.message_id, parse_mode="HTML")
-        except:
-            pass
-        time.sleep(0.25)
-
-    data = {"message": message, "content": content_b64}
+def github_upload(path, content, message):
+    """Upload file lên GitHub"""
+    api = f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/contents/{path}"
+    res = requests.get(api, headers={"Authorization": f"token {GITHUB_TOKEN}"})
+    sha = res.json().get("sha") if res.status_code == 200 else None
+    payload = {
+        "message": message,
+        "content": base64.b64encode(content).decode("utf-8")
+    }
     if sha:
-        data["sha"] = sha
+        payload["sha"] = sha
+    up = requests.put(api, headers={"Authorization": f"token {GITHUB_TOKEN}"}, json=payload)
+    if up.status_code not in [200, 201]:
+        raise Exception(up.text)
+    return True
 
-    r = requests.put(url, headers=headers, json=data)
-    bot.edit_message_text(f"✅ Upload <b>{os.path.basename(file_path)}</b> hoàn tất!", chat_id, msg.message_id, parse_mode="HTML")
-    threading.Timer(30.0, lambda: bot.delete_message(chat_id, msg.message_id)).start()
-    return r.json()["content"]["path"]
+# ========== IPA PARSER ==========
 
-# ========= PHÂN TÍCH FILE IPA (ĐỌC 100% + TEAM NAME) =========
 def parse_ipa(file_path):
     info = {"app_name": None, "bundle_id": None, "version": None, "team_name": None, "team_id": None, "error": None}
 
     try:
         with zipfile.ZipFile(file_path, 'r') as z:
-            # ✅ Chỉ đọc đúng Info.plist trong .app
             plist_files = [f for f in z.namelist() if f.startswith("Payload/") and f.endswith(".app/Info.plist")]
             if not plist_files:
-                info["error"] = "Không tìm thấy Info.plist trong .app"
+                info["error"] = "Không tìm thấy Info.plist"
                 return info
 
             plist_path = plist_files[0]
             data = z.read(plist_path)
 
-            # --- Giải mã Info.plist ---
+            # --- Đọc Info.plist XML/Binary ---
             try:
                 plist = plistlib.loads(data)
             except Exception:
@@ -83,8 +75,8 @@ def parse_ipa(file_path):
                             subprocess.run(["plutil", "-convert", "xml1", tmp.name, "-o", xml_path], timeout=5)
                             with open(xml_path, "rb") as xf:
                                 plist = plistlib.load(xf)
-                        except Exception as e:
-                            info["error"] = f"Không thể đọc Info.plist: {str(e)}"
+                        except:
+                            info["error"] = "Không đọc được Info.plist"
                             return info
                         finally:
                             os.remove(tmp.name)
@@ -94,123 +86,133 @@ def parse_ipa(file_path):
             info["bundle_id"] = plist.get("CFBundleIdentifier")
             info["version"] = plist.get("CFBundleShortVersionString")
 
-            # ✅ Đọc Team Name + Team ID từ embedded.mobileprovision
-            embedded_files = [f for f in z.namelist() if f.endswith(".app/embedded.mobileprovision")]
-            if embedded_files:
-                emb_path = embedded_files[0]
-                emb_data = z.read(emb_path).decode("utf-8", errors="ignore")
-                match = re.search(r"<plist.*?</plist>", emb_data, re.DOTALL)
-                if match:
-                    plist_xml = match.group(0).encode("utf-8")
+            # --- Đọc TeamName + TeamID ---
+            emb = [f for f in z.namelist() if f.endswith(".app/embedded.mobileprovision")]
+            if emb:
+                data = z.read(emb[0]).decode("utf-8", errors="ignore")
+                m = re.search(r"<plist.*?</plist>", data, re.DOTALL)
+                if m:
                     try:
-                        emb_plist = plistlib.loads(plist_xml)
-                        info["team_name"] = emb_plist.get("TeamName")
-                        team_ids = emb_plist.get("TeamIdentifier")
+                        plist_emb = plistlib.loads(m.group(0).encode("utf-8"))
+                        info["team_name"] = plist_emb.get("TeamName")
+                        team_ids = plist_emb.get("TeamIdentifier")
                         if isinstance(team_ids, list) and len(team_ids) > 0:
                             info["team_id"] = team_ids[0]
-                    except Exception:
+                    except:
                         pass
-
-            if not all([info["app_name"], info["bundle_id"], info["version"]]):
-                info["error"] = "Không thể đọc đầy đủ metadata trong Info.plist"
-
     except Exception as e:
-        info["error"] = f"Lỗi khi đọc IPA: {str(e)}"
-
+        info["error"] = str(e)
     return info
 
-# ========= TẠO FILE PLIST =========
-def generate_plist(ipa_url, info):
-    with open("template.plist", "r", encoding="utf-8") as tpl:
-        plist = tpl.read()
-    plist = (
-        plist.replace("__IPA__", ipa_url)
-        .replace("__PACKAGE__", info["bundle_id"] or "")
-        .replace("__VERSION__", info["version"] or "")
-        .replace("__NAME__", info["app_name"] or "")
-    )
-    return plist
+# ========== IPA PROCESSING ==========
 
-# ========= XỬ LÝ FILE IPA =========
-def process_ipa(message, file_id, file_name):
-    chat_id = message.chat.id
-    processing = bot.send_message(chat_id, f"📦 Đang xử lý <b>{file_name}</b>...", parse_mode="HTML")
-    local = f"/tmp/{file_name}"
-
+def process_ipa(message, file_info):
     try:
-        info = bot.get_file(file_id)
-        file = requests.get(f"https://api.telegram.org/file/bot{BOT_TOKEN}/{info.file_path}")
-        with open(local, "wb") as f:
-            f.write(file.content)
+        chat_id = message.chat.id
+        processing_msg = bot.reply_to(message, "⏳ Đang xử lý file IPA...")
 
-        new_id = ''.join(random.choices(string.ascii_lowercase + string.digits, k=5))
-        ipa_name, plist_name = f"{new_id}.ipa", f"{new_id}.plist"
+        file = bot.download_file(bot.get_file(file_info.file_id).file_path)
+        tmp_path = f"/tmp/{random_string()}.ipa"
+        with open(tmp_path, "wb") as f:
+            f.write(file)
 
-        meta = parse_ipa(local)
-        if meta["error"]:
-            raise Exception(meta["error"])
+        meta = parse_ipa(tmp_path)
+        rand = random_string()
+        ipa_name = f"{rand}.ipa"
+        plist_name = f"{rand}.plist"
 
-        upload_with_progress(chat_id, local, f"iPA/{ipa_name}", f"Upload {ipa_name}")
-        ipa_url = f"{CUSTOM_DOMAIN}/iPA/{ipa_name}"
-        plist_url = f"{CUSTOM_DOMAIN}/Plist/{plist_name}"
+        ipa_path = f"iPA/{ipa_name}"
+        plist_path = f"Plist/{plist_name}"
 
-        plist_data = generate_plist(ipa_url, meta)
-        tmp_plist = f"/tmp/{plist_name}"
-        with open(tmp_plist, "w", encoding="utf-8") as f:
-            f.write(plist_data)
+        ipa_url = f"https://download.khoindvn.io.vn/iPA/{ipa_name}"
+        plist_url = f"https://download.khoindvn.io.vn/Plist/{plist_name}"
 
-        upload_with_progress(chat_id, tmp_plist, f"Plist/{plist_name}", f"Upload {plist_name}")
+        # --- Upload IPA ---
+        github_upload(ipa_path, open(tmp_path, "rb").read(), f"Upload {ipa_name}")
+
+        # --- Tạo plist ---
+        template = f"""<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>items</key>
+    <array>
+        <dict>
+            <key>assets</key>
+            <array>
+                <dict>
+                    <key>kind</key>
+                    <string>software-package</string>
+                    <key>url</key>
+                    <string>{ipa_url}</string>
+                </dict>
+            </array>
+            <key>metadata</key>
+            <dict>
+                <key>bundle-identifier</key>
+                <string>{meta.get('bundle_id') or ''}</string>
+                <key>bundle-version</key>
+                <string>{meta.get('version') or ''}</string>
+                <key>kind</key>
+                <string>software</string>
+                <key>title</key>
+                <string>{meta.get('app_name') or ''}</string>
+            </dict>
+        </dict>
+    </array>
+</dict>
+</plist>"""
+
+        github_upload(plist_path, template.encode("utf-8"), f"Tạo {plist_name}")
+
+        # --- Link cài đặt ---
         install_link = f"itms-services://?action=download-manifest&url={plist_url}"
         short = shorten(install_link)
 
         msg = (
             f"✅ <b>Upload hoàn tất!</b>\n\n"
-            f"📱 Ứng dụng: <b>{meta['app_name']}</b>\n"
-            f"🆔 Bundle: <code>{meta['bundle_id']}</code>\n"
-            f"🔢 Phiên bản: <b>{meta['version']}</b>\n"
-            f"👥 Team: <b>{meta.get('team_name') or 'Không rõ'}</b> "
-            f"(<code>{meta.get('team_id') or 'Không rõ'}</code>)\n\n"
+            f"📱 Ứng dụng: <b>{meta.get('app_name') or 'Unknown'}</b>\n"
+            f"🆔 Bundle: <code>{meta.get('bundle_id') or 'Unknown'}</code>\n"
+            f"🔢 Phiên bản: <b>{meta.get('version') or 'Unknown'}</b>\n"
+            f"👥 Team: <b>{meta.get('team_name') or 'Unknown'}</b> (<code>{meta.get('team_id') or 'Unknown'}</code>)\n\n"
             f"📦 <b>Tải IPA:</b>\n{ipa_url}\n\n"
             f"📲 <b>Cài trực tiếp:</b>\n{short}"
         )
-        bot.send_message(chat_id, msg, parse_mode="HTML", disable_web_page_preview=True)
+
+        bot.delete_message(chat_id, processing_msg.message_id)
+        bot.send_message(chat_id, msg, parse_mode="HTML")
 
     except Exception as e:
-        bot.send_message(chat_id, f"❌ <b>Lỗi:</b> <code>{html.escape(str(e))}</code>", parse_mode="HTML")
+        bot.send_message(message.chat.id, f"❌ Lỗi xử lý IPA: {e}")
 
-    finally:
-        try:
-            bot.delete_message(chat_id, processing.message_id)
-        except:
-            pass
-        if os.path.exists(local):
-            os.remove(local)
+# ========== COMMANDS ==========
 
-# ========= LỆNH =========
-@bot.message_handler(content_types=["document"])
-def handle_file(m):
-    threading.Thread(target=process_ipa, args=(m, m.document.file_id, m.document.file_name)).start()
+@bot.message_handler(commands=['start', 'help'])
+def send_welcome(message):
+    bot.reply_to(message,
+        "👋 Gửi file .ipa để bot tự động upload, tạo link cài đặt iOS và rút gọn link.\n\n"
+        "Các lệnh:\n"
+        "/listipa – Liệt kê file IPA\n"
+        "/listplist – Liệt kê file PLIST\n")
 
-@bot.message_handler(commands=["start", "help"])
-def start_help(m):
-    bot.reply_to(m, "👋 Gửi file .ipa để tạo link cài đặt.\nTự động đọc Info.plist + Team Name, upload lên GitHub và tạo link iOS.", parse_mode="HTML")
+@bot.message_handler(content_types=['document'])
+def handle_docs(message):
+    file_info = message.document
+    if file_info.file_name.endswith(".ipa"):
+        threading.Thread(target=process_ipa, args=(message, file_info)).start()
+    else:
+        bot.reply_to(message, "❌ Vui lòng gửi đúng định dạng .ipa")
 
-# ========= FLASK WEBHOOK =========
-app = Flask(__name__)
+# ========== FLASK WEBHOOK ==========
 
-@app.route('/', methods=['POST'])
+@app.route(f"/{BOT_TOKEN}", methods=['POST'])
 def webhook():
-    update = telebot.types.Update.de_json(request.data.decode("utf-8"))
-    bot.process_new_updates([update])
+    bot.process_new_updates([telebot.types.Update.de_json(request.stream.read().decode("utf-8"))])
     return "OK", 200
 
 @app.route('/')
 def home():
-    return "Bot đang hoạt động 🚀"
+    return "Bot đang chạy ngon 🍀"
 
-bot.remove_webhook()
-time.sleep(1)
-bot.set_webhook(url=WEBHOOK_URL)
-
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=8000)
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=8000)
