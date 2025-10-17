@@ -1,9 +1,8 @@
 import os, io, zipfile, plistlib, tempfile, subprocess, re, requests, base64, random, string, threading
 from flask import Flask, request
 import telebot
-from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-# --- ENV ---
+# ===== ENV =====
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 GITHUB_OWNER = os.getenv("GITHUB_OWNER")
@@ -13,39 +12,50 @@ USE_WEBHOOK = os.getenv("USE_WEBHOOK", "True").lower() == "true"
 bot = telebot.TeleBot(BOT_TOKEN)
 app = Flask(__name__)
 
-# ========== UTILS ==========
+# ===== UTILITIES =====
 
 def random_string(n=5):
     return ''.join(random.choices(string.ascii_lowercase + string.digits, k=n))
 
 def shorten(url):
-    """Rút gọn link (hỗ trợ itms-services://)"""
+    """Rút gọn link (an toàn cho itms-services://)"""
     try:
         encoded = requests.utils.quote(url, safe="")
-        r = requests.get(f"https://is.gd/create.php?format=simple&url={encoded}", timeout=10)
-        if r.status_code == 200 and r.text.startswith("http"):
-            return r.text.strip()
+        res = requests.get(
+            f"https://is.gd/create.php?format=simple&url={encoded}",
+            timeout=10,
+            headers={"User-Agent": "Mozilla/5.0"}
+        )
+        if res.status_code == 200:
+            text = res.text.strip()
+            if text.startswith("http") and "is.gd" in text:
+                return text
+        print("⚠️ is.gd trả về không hợp lệ:", res.text[:100])
+        return url
     except Exception as e:
-        print("Shorten error:", e)
-    return url
+        print("❌ Lỗi shorten():", e)
+        return url
 
 def github_upload(path, content, message):
-    """Upload file lên GitHub"""
+    """Upload file lên GitHub repo"""
     api = f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/contents/{path}"
-    res = requests.get(api, headers={"Authorization": f"token {GITHUB_TOKEN}"})
+    headers = {"Authorization": f"token {GITHUB_TOKEN}"}
+    res = requests.get(api, headers=headers)
     sha = res.json().get("sha") if res.status_code == 200 else None
+
     payload = {
         "message": message,
         "content": base64.b64encode(content).decode("utf-8")
     }
     if sha:
         payload["sha"] = sha
-    up = requests.put(api, headers={"Authorization": f"token {GITHUB_TOKEN}"}, json=payload)
+
+    up = requests.put(api, headers=headers, json=payload)
     if up.status_code not in [200, 201]:
         raise Exception(up.text)
     return True
 
-# ========== IPA PARSER ==========
+# ===== IPA PARSER =====
 
 def parse_ipa(file_path):
     info = {"app_name": None, "bundle_id": None, "version": None, "team_name": None, "team_id": None, "error": None}
@@ -60,7 +70,7 @@ def parse_ipa(file_path):
             plist_path = plist_files[0]
             data = z.read(plist_path)
 
-            # --- Đọc Info.plist XML/Binary ---
+            # Đọc Info.plist (XML hoặc Binary)
             try:
                 plist = plistlib.loads(data)
             except Exception:
@@ -77,7 +87,7 @@ def parse_ipa(file_path):
                             with open(xml_path, "rb") as xf:
                                 plist = plistlib.load(xf)
                         except:
-                            info["error"] = "Không đọc được Info.plist"
+                            info["error"] = "Không thể đọc Info.plist"
                             return info
                         finally:
                             os.remove(tmp.name)
@@ -87,7 +97,7 @@ def parse_ipa(file_path):
             info["bundle_id"] = plist.get("CFBundleIdentifier")
             info["version"] = plist.get("CFBundleShortVersionString")
 
-            # --- Đọc TeamName + TeamID ---
+            # Đọc embedded.mobileprovision → Team Name + Team ID
             emb = [f for f in z.namelist() if f.endswith(".app/embedded.mobileprovision")]
             if emb:
                 data = z.read(emb[0]).decode("utf-8", errors="ignore")
@@ -103,20 +113,23 @@ def parse_ipa(file_path):
                         pass
     except Exception as e:
         info["error"] = str(e)
+
     return info
 
-# ========== IPA PROCESSING ==========
+# ===== PROCESS IPA =====
 
 def process_ipa(message, file_info):
     try:
         chat_id = message.chat.id
         processing_msg = bot.reply_to(message, "⏳ Đang xử lý file IPA...")
 
+        # Lưu file tạm
         file = bot.download_file(bot.get_file(file_info.file_id).file_path)
         tmp_path = f"/tmp/{random_string()}.ipa"
         with open(tmp_path, "wb") as f:
             f.write(file)
 
+        # Phân tích metadata
         meta = parse_ipa(tmp_path)
         rand = random_string()
         ipa_name = f"{rand}.ipa"
@@ -128,10 +141,10 @@ def process_ipa(message, file_info):
         ipa_url = f"https://download.khoindvn.io.vn/iPA/{ipa_name}"
         plist_url = f"https://download.khoindvn.io.vn/Plist/{plist_name}"
 
-        # --- Upload IPA ---
+        # Upload IPA
         github_upload(ipa_path, open(tmp_path, "rb").read(), f"Upload {ipa_name}")
 
-        # --- Tạo plist ---
+        # Tạo file plist
         template = f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -166,7 +179,6 @@ def process_ipa(message, file_info):
 
         github_upload(plist_path, template.encode("utf-8"), f"Tạo {plist_name}")
 
-        # --- Link cài đặt ---
         install_link = f"itms-services://?action=download-manifest&url={plist_url}"
         short = shorten(install_link)
 
@@ -186,7 +198,7 @@ def process_ipa(message, file_info):
     except Exception as e:
         bot.send_message(message.chat.id, f"❌ Lỗi xử lý IPA: {e}")
 
-# ========== COMMANDS ==========
+# ===== COMMANDS =====
 
 @bot.message_handler(commands=['start', 'help'])
 def send_welcome(message):
@@ -204,7 +216,7 @@ def handle_docs(message):
     else:
         bot.reply_to(message, "❌ Vui lòng gửi đúng định dạng .ipa")
 
-# ========== FLASK + FALLBACK POLLING ==========
+# ===== FLASK / POLLING =====
 
 @app.route(f"/{BOT_TOKEN}", methods=['POST'])
 def webhook():
@@ -217,8 +229,8 @@ def home():
 
 if __name__ == '__main__':
     if USE_WEBHOOK:
-        print("🚀 Chạy chế độ Webhook (Flask)")
+        print("🚀 Chạy Webhook mode (Koyeb/Render)")
         app.run(host='0.0.0.0', port=8000)
     else:
-        print("💻 Chạy chế độ Polling (Local test)")
+        print("💻 Chạy Polling mode (local test)")
         bot.infinity_polling()
