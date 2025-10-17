@@ -64,7 +64,7 @@ def upload_with_progress(chat_id, file_path, repo_path, message):
 
 # ========= PHÂN TÍCH FILE IPA =========
 def parse_ipa(file_path):
-    info = {"app_name": "Unknown", "bundle_id": "Unknown", "version": "Unknown", "team_name": "Unknown", "team_id": "Unknown", "error": None}
+    info = {"app_name": "", "bundle_id": "", "version": "", "team_name": "", "team_id": "", "error": None}
     try:
         with zipfile.ZipFile(file_path, 'r') as z:
             plist_file = [f for f in z.namelist() if f.endswith("Info.plist") and "Payload/" in f]
@@ -89,17 +89,17 @@ def parse_ipa(file_path):
                         info["error"] = "Không đọc được Info.plist (binary hoặc mã hoá)"
                         return info
 
-                info["app_name"] = p.get("CFBundleDisplayName") or p.get("CFBundleName")
-                info["bundle_id"] = p.get("CFBundleIdentifier")
-                info["version"] = p.get("CFBundleShortVersionString")
+                info["app_name"] = p.get("CFBundleDisplayName") or p.get("CFBundleName") or ""
+                info["bundle_id"] = p.get("CFBundleIdentifier") or ""
+                info["version"] = p.get("CFBundleShortVersionString") or ""
 
             prov = [f for f in z.namelist() if f.endswith("embedded.mobileprovision")]
             if prov:
                 c = z.read(prov[0]).decode("utf-8", errors="ignore")
                 n = re.search(r"<key>TeamName</key>\s*<string>(.*?)</string>", c)
                 i = re.search(r"<key>TeamIdentifier</key>\s*<array>\s*<string>(.*?)</string>", c)
-                info["team_name"] = n.group(1) if n else "Unknown"
-                info["team_id"] = i.group(1) if i else "Unknown"
+                info["team_name"] = n.group(1) if n else ""
+                info["team_id"] = i.group(1) if i else ""
     except Exception as e:
         info["error"] = f"Lỗi khi đọc IPA: {str(e)}"
     return info
@@ -111,9 +111,9 @@ def generate_plist(ipa_url, info):
             content = tpl.read()
         content = (
             content.replace("__IPA__", ipa_url)
-            .replace("__PACKAGE__", info["bundle_id"] or "unknown.bundle")
-            .replace("__VERSION__", info["version"] or "1.0")
-            .replace("__NAME__", info["app_name"] or "Unknown App")
+            .replace("__PACKAGE__", info.get("bundle_id", ""))
+            .replace("__VERSION__", info.get("version", ""))
+            .replace("__NAME__", info.get("app_name", ""))
         )
         return content
     except Exception as e:
