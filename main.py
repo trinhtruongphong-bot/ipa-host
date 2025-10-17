@@ -1,4 +1,4 @@
-import telebot, requests, base64, zipfile, plistlib, re, os, random, string, threading, time, html, urllib.parse
+import telebot, requests, base64, zipfile, plistlib, re, os, random, string, threading, time, html, urllib.parse, tempfile
 from flask import Flask, request
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -33,6 +33,13 @@ def shorten(url):
 def upload_with_progress(chat_id, file_path, repo_path, message):
     headers = {"Authorization": f"token {GITHUB_TOKEN}"}
     url = f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/contents/{repo_path}"
+
+    # 🔍 Kiểm tra nếu file đã tồn tại, lấy SHA để cập nhật
+    sha = None
+    check = requests.get(url, headers=headers)
+    if check.status_code == 200:
+        sha = check.json().get("sha")
+
     msg = bot.send_message(chat_id, f"📤 Đang upload <b>{os.path.basename(file_path)}</b>... 0%", parse_mode="HTML")
 
     with open(file_path, "rb") as f:
@@ -46,6 +53,9 @@ def upload_with_progress(chat_id, file_path, repo_path, message):
         time.sleep(0.2)
 
     data = {"message": message, "content": content_b64}
+    if sha:
+        data["sha"] = sha
+
     r = requests.put(url, headers=headers, json=data)
     if r.status_code not in [200, 201]:
         raise Exception(r.text)
@@ -55,22 +65,53 @@ def upload_with_progress(chat_id, file_path, repo_path, message):
 
 # ========= PHÂN TÍCH FILE IPA =========
 def parse_ipa(file_path):
-    info = {"app_name": "Unknown", "bundle_id": "Unknown", "version": "Unknown", "team_name": "Unknown", "team_id": "Unknown"}
-    with zipfile.ZipFile(file_path, 'r') as z:
-        plist_file = [f for f in z.namelist() if f.endswith("Info.plist") and "Payload/" in f]
-        if plist_file:
+    info = {
+        "app_name": "Unknown",
+        "bundle_id": "Unknown",
+        "version": "Unknown",
+        "team_name": "Unknown",
+        "team_id": "Unknown",
+        "error": None
+    }
+    try:
+        with zipfile.ZipFile(file_path, 'r') as z:
+            plist_file = [f for f in z.namelist() if f.endswith("Info.plist") and "Payload/" in f]
+            if not plist_file:
+                info["error"] = "Không tìm thấy Info.plist trong Payload/"
+                return info
+
             with z.open(plist_file[0]) as f:
-                p = plistlib.load(f)
+                data = f.read()
+                try:
+                    p = plistlib.loads(data)
+                except Exception:
+                    # Nếu là binary -> chuyển sang XML
+                    try:
+                        with tempfile.NamedTemporaryFile(delete=False) as tmp:
+                            tmp.write(data)
+                            tmp.flush()
+                            os.system(f"plutil -convert xml1 {tmp.name}")
+                            with open(tmp.name, "rb") as xmlf:
+                                p = plistlib.load(xmlf)
+                        os.remove(tmp.name)
+                    except Exception:
+                        info["error"] = "Không đọc được Info.plist (binary hoặc mã hoá)"
+                        return info
+
                 info["app_name"] = p.get("CFBundleDisplayName") or p.get("CFBundleName")
                 info["bundle_id"] = p.get("CFBundleIdentifier")
                 info["version"] = p.get("CFBundleShortVersionString")
-        prov = [f for f in z.namelist() if f.endswith("embedded.mobileprovision")]
-        if prov:
-            c = z.read(prov[0]).decode("utf-8", errors="ignore")
-            n = re.search(r"<key>TeamName</key>\s*<string>(.*?)</string>", c)
-            i = re.search(r"<key>TeamIdentifier</key>\s*<array>\s*<string>(.*?)</string>", c)
-            info["team_name"] = n.group(1) if n else "Unknown"
-            info["team_id"] = i.group(1) if i else "Unknown"
+
+            prov = [f for f in z.namelist() if f.endswith("embedded.mobileprovision")]
+            if prov:
+                c = z.read(prov[0]).decode("utf-8", errors="ignore")
+                n = re.search(r"<key>TeamName</key>\s*<string>(.*?)</string>", c)
+                i = re.search(r"<key>TeamIdentifier</key>\s*<array>\s*<string>(.*?)</string>", c)
+                info["team_name"] = n.group(1) if n else "Unknown"
+                info["team_id"] = i.group(1) if i else "Unknown"
+    except Exception as e:
+        info["error"] = f"Lỗi khi đọc IPA: {str(e)}"
+
     return info
 
 # ========= TẠO FILE PLIST =========
@@ -113,27 +154,26 @@ def process_ipa(message, file_id, file_name):
             f.write(plist_data)
         upload_with_progress(chat_id, plist_path, f"Plist/{plist_name}", f"Upload {plist_name}")
 
-        # 🔗 Tạo link cài đặt & rút gọn (hiển thị rút gọn duy nhất)
         install_link = f"itms-services://?action=download-manifest&url={plist_url}"
         short_link = shorten(install_link)
 
-        msg = (
-            f"✅ <b>Upload hoàn tất!</b>\n\n"
-            f"📱 Ứng dụng: <b>{meta['app_name']}</b>\n"
-            f"🆔 Bundle: <code>{meta['bundle_id']}</code>\n"
-            f"🔢 Phiên bản: <b>{meta['version']}</b>\n"
-            f"👥 Team: <b>{meta['team_name']}</b> ({meta['team_id']})\n\n"
-            f"📦 <b>Tải IPA:</b>\n{ipa_url}\n\n"
-            f"📲 <b>Cài trực tiếp:</b>\n{short_link}"
-        )
+        if meta["error"]:
+            msg = f"⚠️ <b>Không thể đọc đầy đủ thông tin IPA</b>\n\nLý do: <i>{meta['error']}</i>\n\n📦 <b>Tải IPA:</b>\n{ipa_url}\n\n📲 <b>Cài trực tiếp:</b>\n{short_link}"
+        else:
+            msg = (
+                f"✅ <b>Upload hoàn tất!</b>\n\n"
+                f"📱 Ứng dụng: <b>{meta['app_name']}</b>\n"
+                f"🆔 Bundle: <code>{meta['bundle_id']}</code>\n"
+                f"🔢 Phiên bản: <b>{meta['version']}</b>\n"
+                f"👥 Team: <b>{meta['team_name']}</b> ({meta['team_id']})\n\n"
+                f"📦 <b>Tải IPA:</b>\n{ipa_url}\n\n"
+                f"📲 <b>Cài trực tiếp:</b>\n{short_link}"
+            )
 
         send_long_message(chat_id, msg)
 
     except Exception as e:
-        err_text = str(e)
-        if len(err_text) > 1000:
-            err_text = err_text[:1000] + "... (rút gọn)"
-        bot.send_message(chat_id, f"❌ <b>Lỗi:</b> <code>{html.escape(err_text)}</code>", parse_mode="HTML")
+        bot.send_message(chat_id, f"❌ <b>Lỗi:</b> <code>{html.escape(str(e))}</code>", parse_mode="HTML")
 
     finally:
         try:
