@@ -1,4 +1,4 @@
-import telebot, requests, base64, zipfile, plistlib, re, os, random, string, threading, time, html
+import telebot, requests, base64, zipfile, plistlib, re, os, random, string, threading, time, html, urllib.parse
 from flask import Flask, request
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -6,7 +6,6 @@ GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 GITHUB_OWNER = os.getenv("GITHUB_OWNER")
 GITHUB_REPO = os.getenv("GITHUB_REPO")
 
-# 🌐 Domain riêng của bạn
 CUSTOM_DOMAIN = "https://download.khoindvn.io.vn"
 WEBHOOK_URL = "https://developed-hyena-trinhtruongphong-abb0500e.koyeb.app/"
 
@@ -16,12 +15,19 @@ bot = telebot.TeleBot(BOT_TOKEN)
 def send_long_message(chat_id, text, parse_mode="HTML"):
     max_len = 4000
     for i in range(0, len(text), max_len):
-        bot.send_message(
-            chat_id,
-            text[i:i+max_len],
-            parse_mode=parse_mode,
-            disable_web_page_preview=True
-        )
+        bot.send_message(chat_id, text[i:i+max_len], parse_mode=parse_mode, disable_web_page_preview=True)
+
+# ========= RÚT GỌN LINK =========
+def shorten(url):
+    encoded = urllib.parse.quote(url, safe="")
+    try:
+        r = requests.get(f"https://is.gd/create.php?format=simple&url={encoded}", timeout=10)
+        if r.status_code == 200:
+            return r.text.strip()
+        else:
+            return url
+    except:
+        return url
 
 # ========= UPLOAD FILE LÊN GITHUB =========
 def upload_with_progress(chat_id, file_path, repo_path, message):
@@ -34,12 +40,7 @@ def upload_with_progress(chat_id, file_path, repo_path, message):
 
     for p in range(0, 101, 25):
         try:
-            bot.edit_message_text(
-                f"📤 Đang upload <b>{os.path.basename(file_path)}</b>... {p}%",
-                chat_id,
-                msg.message_id,
-                parse_mode="HTML"
-            )
+            bot.edit_message_text(f"📤 Đang upload <b>{os.path.basename(file_path)}</b>... {p}%", chat_id, msg.message_id, parse_mode="HTML")
         except:
             pass
         time.sleep(0.2)
@@ -49,23 +50,12 @@ def upload_with_progress(chat_id, file_path, repo_path, message):
     if r.status_code not in [200, 201]:
         raise Exception(r.text)
 
-    bot.edit_message_text(
-        f"✅ Upload <b>{os.path.basename(file_path)}</b> hoàn tất!",
-        chat_id,
-        msg.message_id,
-        parse_mode="HTML"
-    )
+    bot.edit_message_text(f"✅ Upload <b>{os.path.basename(file_path)}</b> hoàn tất!", chat_id, msg.message_id, parse_mode="HTML")
     return r.json()["content"]["path"]
 
 # ========= PHÂN TÍCH FILE IPA =========
 def parse_ipa(file_path):
-    info = {
-        "app_name": "Unknown",
-        "bundle_id": "Unknown",
-        "version": "Unknown",
-        "team_name": "Unknown",
-        "team_id": "Unknown"
-    }
+    info = {"app_name": "Unknown", "bundle_id": "Unknown", "version": "Unknown", "team_name": "Unknown", "team_id": "Unknown"}
     with zipfile.ZipFile(file_path, 'r') as z:
         plist_file = [f for f in z.namelist() if f.endswith("Info.plist") and "Payload/" in f]
         if plist_file:
@@ -114,17 +104,18 @@ def process_ipa(message, file_id, file_name):
         meta = parse_ipa(local)
 
         upload_with_progress(chat_id, local, f"iPA/{ipa_name}", f"Upload {ipa_name}")
-
-        # 🔗 Dùng domain riêng thay vì GitHub raw
         ipa_url = f"{CUSTOM_DOMAIN}/iPA/{ipa_name}"
         plist_url = f"{CUSTOM_DOMAIN}/Plist/{plist_name}"
-        short = f"itms-services://?action=download-manifest&url={plist_url}"
 
         plist_data = generate_plist(ipa_url, meta)
         plist_path = f"/tmp/{plist_name}"
         with open(plist_path, "w", encoding="utf-8") as f:
             f.write(plist_data)
         upload_with_progress(chat_id, plist_path, f"Plist/{plist_name}", f"Upload {plist_name}")
+
+        # 🔗 Tạo link cài đặt & rút gọn (hiển thị rút gọn duy nhất)
+        install_link = f"itms-services://?action=download-manifest&url={plist_url}"
+        short_link = shorten(install_link)
 
         msg = (
             f"✅ <b>Upload hoàn tất!</b>\n\n"
@@ -133,7 +124,7 @@ def process_ipa(message, file_id, file_name):
             f"🔢 Phiên bản: <b>{meta['version']}</b>\n"
             f"👥 Team: <b>{meta['team_name']}</b> ({meta['team_id']})\n\n"
             f"📦 <b>Tải IPA:</b>\n{ipa_url}\n\n"
-            f"📲 <b>Cài trực tiếp:</b>\n{short}"
+            f"📲 <b>Cài trực tiếp:</b>\n{short_link}"
         )
 
         send_long_message(chat_id, msg)
@@ -156,10 +147,8 @@ def process_ipa(message, file_id, file_name):
 @bot.message_handler(commands=["listipa", "listplist"])
 def list_files(m):
     folder = "iPA" if m.text == "/listipa" else "Plist"
-    r = requests.get(
-        f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/contents/{folder}",
-        headers={"Authorization": f"token {GITHUB_TOKEN}"}
-    )
+    r = requests.get(f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/contents/{folder}",
+                     headers={"Authorization": f"token {GITHUB_TOKEN}"})
     if r.status_code != 200:
         return bot.reply_to(m, "❌ Không thể lấy danh sách.")
     files = [f for f in r.json() if f["name"].endswith(".ipa") or f["name"].endswith(".plist")]
@@ -174,11 +163,7 @@ def list_files(m):
 def del_file(c):
     _, folder, name, sha = c.data.split(":")
     url = f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/contents/{folder}/{name}"
-    r = requests.delete(
-        url,
-        headers={"Authorization": f"token {GITHUB_TOKEN}"},
-        json={"message": f"Delete {name}", "sha": sha}
-    )
+    r = requests.delete(url, headers={"Authorization": f"token {GITHUB_TOKEN}"}, json={"message": f"Delete {name}", "sha": sha})
     if r.status_code == 200:
         bot.edit_message_text(f"✅ Đã xoá <b>{html.escape(name)}</b> khỏi <b>{folder}</b>.", c.message.chat.id, c.message.message_id, parse_mode="HTML")
     else:
