@@ -11,15 +11,14 @@ WEBHOOK_URL = "https://developed-hyena-trinhtruongphong-abb0500e.koyeb.app/"
 bot = telebot.TeleBot(BOT_TOKEN)
 
 # ========= GỬI TIN NHẮN DÀI =========
-def send_long_message(chat_id, text, parse_mode="HTML", reply_markup=None):
+def send_long_message(chat_id, text, parse_mode="HTML"):
     max_len = 4000
     for i in range(0, len(text), max_len):
         bot.send_message(
             chat_id,
             text[i:i+max_len],
             parse_mode=parse_mode,
-            disable_web_page_preview=True,
-            reply_markup=reply_markup if i == 0 else None
+            disable_web_page_preview=True
         )
 
 # ========= UPLOAD FILE LÊN GITHUB =========
@@ -113,7 +112,7 @@ def process_ipa(message, file_id, file_name):
         meta = parse_ipa(local)
 
         upload_with_progress(chat_id, local, f"iPA/{ipa_name}", f"Upload {ipa_name}")
-        ipa_url = f"https://github.com/{GITHUB_OWNER}/{GITHUB_REPO}/blob/main/iPA/{ipa_name}?raw=true"  # ✅ FIX
+        ipa_url = f"https://github.com/{GITHUB_OWNER}/{GITHUB_REPO}/blob/main/iPA/{ipa_name}?raw=true"
 
         plist_data = generate_plist(ipa_url, meta)
         plist_path = f"/tmp/{plist_name}"
@@ -129,16 +128,12 @@ def process_ipa(message, file_id, file_name):
             f"📱 Ứng dụng: <b>{meta['app_name']}</b>\n"
             f"🆔 Bundle: <code>{meta['bundle_id']}</code>\n"
             f"🔢 Phiên bản: <b>{meta['version']}</b>\n"
-            f"👥 Team: <b>{meta['team_name']}</b> ({meta['team_id']})"
+            f"👥 Team: <b>{meta['team_name']}</b> ({meta['team_id']})\n\n"
+            f"📦 <b>Tải IPA:</b>\n{ipa_url}\n\n"
+            f"📲 <b>Cài trực tiếp:</b>\n{short}"
         )
 
-        kb = telebot.types.InlineKeyboardMarkup()
-        kb.add(
-            telebot.types.InlineKeyboardButton("📦 Tải IPA", url=ipa_url),
-            telebot.types.InlineKeyboardButton("📲 Cài trực tiếp", url=short)
-        )
-
-        send_long_message(chat_id, msg, reply_markup=kb)
+        send_long_message(chat_id, msg)
 
     except Exception as e:
         err_text = str(e)
