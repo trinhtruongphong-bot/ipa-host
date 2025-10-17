@@ -12,14 +12,15 @@ WEBHOOK_URL = "https://developed-hyena-trinhtruongphong-abb0500e.koyeb.app/"
 
 bot = telebot.TeleBot(BOT_TOKEN)
 
-# ========= RÚT GỌN LINK (Chỉ dùng CleanURI) =========
+# ========= RÚT GỌN LINK BẰNG TRÌNH DUYỆT (TinyURL web form) =========
 def shorten(url):
     try:
-        res = requests.post("https://cleanuri.com/api/v1/shorten", data={"url": url}, timeout=10)
-        if res.status_code == 200:
-            data = res.json()
-            if "result_url" in data:
-                return data["result_url"]
+        # Mô phỏng việc gửi form như người dùng thật
+        res = requests.post("https://tinyurl.com/create.php", data={"url": url}, timeout=10)
+        # Lấy link tinyurl trong HTML trả về
+        match = re.search(r'(https://tinyurl\.com/[a-zA-Z0-9]+)', res.text)
+        if match:
+            return match.group(1)
     except Exception as e:
         print(f"❌ Lỗi shorten(): {e}")
     return url
@@ -71,24 +72,20 @@ def parse_ipa(file_path):
             try:
                 plist = plistlib.loads(data)
             except Exception:
-                try:
-                    from biplist import readPlistFromString
-                    plist = readPlistFromString(data)
-                except Exception:
-                    with tempfile.NamedTemporaryFile(delete=False) as tmp:
-                        tmp.write(data)
-                        tmp.flush()
-                        xml_path = tmp.name + ".xml"
-                        try:
-                            subprocess.run(["plutil", "-convert", "xml1", tmp.name, "-o", xml_path], timeout=5)
-                            with open(xml_path, "rb") as xf:
-                                plist = plistlib.load(xf)
-                        except Exception as e:
-                            info["error"] = f"Không thể đọc Info.plist: {str(e)}"
-                            return info
-                        finally:
-                            os.remove(tmp.name)
-                            if os.path.exists(xml_path): os.remove(xml_path)
+                with tempfile.NamedTemporaryFile(delete=False) as tmp:
+                    tmp.write(data)
+                    tmp.flush()
+                    xml_path = tmp.name + ".xml"
+                    try:
+                        subprocess.run(["plutil", "-convert", "xml1", tmp.name, "-o", xml_path], timeout=5)
+                        with open(xml_path, "rb") as xf:
+                            plist = plistlib.load(xf)
+                    except Exception as e:
+                        info["error"] = f"Không thể đọc Info.plist: {str(e)}"
+                        return info
+                    finally:
+                        os.remove(tmp.name)
+                        if os.path.exists(xml_path): os.remove(xml_path)
 
             info["app_name"] = plist.get("CFBundleDisplayName") or plist.get("CFBundleName")
             info["bundle_id"] = plist.get("CFBundleIdentifier")
@@ -108,9 +105,6 @@ def parse_ipa(file_path):
                             info["team_id"] = team_ids[0]
                     except Exception:
                         pass
-
-            if not all([info["app_name"], info["bundle_id"], info["version"]]):
-                info["error"] = "Không thể đọc đầy đủ metadata trong Info.plist"
 
     except Exception as e:
         info["error"] = f"Lỗi khi đọc IPA: {str(e)}"
@@ -145,9 +139,6 @@ def process_ipa(message, file_id, file_name):
         ipa_name, plist_name = f"{new_id}.ipa", f"{new_id}.plist"
 
         meta = parse_ipa(local)
-        if meta["error"]:
-            raise Exception(meta["error"])
-
         upload_with_progress(chat_id, local, f"iPA/{ipa_name}", f"Upload {ipa_name}")
         ipa_url = f"{CUSTOM_DOMAIN}/iPA/{ipa_name}"
         plist_url = f"{CUSTOM_DOMAIN}/Plist/{plist_name}"
@@ -156,8 +147,8 @@ def process_ipa(message, file_id, file_name):
         tmp_plist = f"/tmp/{plist_name}"
         with open(tmp_plist, "w", encoding="utf-8") as f:
             f.write(plist_data)
-
         upload_with_progress(chat_id, tmp_plist, f"Plist/{plist_name}", f"Upload {plist_name}")
+
         install_link = f"itms-services://?action=download-manifest&url={plist_url}"
         short = shorten(install_link)
 
