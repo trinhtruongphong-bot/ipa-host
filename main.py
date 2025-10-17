@@ -1,4 +1,4 @@
-import telebot, requests, base64, zipfile, plistlib, re, os, random, string, threading, time, html, urllib.parse, tempfile
+import telebot, requests, base64, zipfile, plistlib, os, random, string, threading, time, html, urllib.parse, tempfile
 from flask import Flask, request
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -21,7 +21,7 @@ def send_long_message(chat_id, text, parse_mode="HTML"):
 def shorten(url):
     encoded = urllib.parse.quote(url, safe="")
     try:
-        r = requests.get(f"https://is.gd/create.php?format=simple&url={encoded}", timeout=10)
+        r = requests.get(f"https://is.gd/create.php?format=simple&url={encoded}", timeout=20)
         if r.status_code == 200:
             return r.text.strip()
     except:
@@ -33,7 +33,7 @@ def upload_with_progress(chat_id, file_path, repo_path, message):
     headers = {"Authorization": f"token {GITHUB_TOKEN}"}
     url = f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/contents/{repo_path}"
 
-    # 🔍 Kiểm tra nếu file đã tồn tại
+    # Kiểm tra file đã tồn tại chưa
     sha = None
     check = requests.get(url, headers=headers)
     if check.status_code == 200:
@@ -55,21 +55,32 @@ def upload_with_progress(chat_id, file_path, repo_path, message):
     if sha:
         data["sha"] = sha
 
-    r = requests.put(url, headers=headers, json=data)
-    if r.status_code not in [200, 201]:
-        raise Exception(r.text)
+    # Thử lại 3 lần nếu mất kết nối
+    for attempt in range(3):
+        try:
+            r = requests.put(url, headers=headers, json=data, timeout=120)
+            if r.status_code in [200, 201]:
+                break
+            else:
+                raise Exception(r.text)
+        except Exception as e:
+            if attempt < 2:
+                time.sleep(3)
+                continue
+            else:
+                raise e
 
     bot.edit_message_text(f"✅ Upload <b>{os.path.basename(file_path)}</b> hoàn tất!", chat_id, msg.message_id, parse_mode="HTML")
     return r.json()["content"]["path"]
 
-# ========= PHÂN TÍCH FILE IPA =========
+# ========= PHÂN TÍCH FILE IPA (chỉ đọc Info.plist) =========
 def parse_ipa(file_path):
-    info = {"app_name": "", "bundle_id": "", "version": "", "team_name": "", "team_id": "", "error": None}
+    info = {"app_name": "", "bundle_id": "", "version": "", "error": None}
     try:
         with zipfile.ZipFile(file_path, 'r') as z:
-            plist_file = [f for f in z.namelist() if f.endswith("Info.plist") and "Payload/" in f]
+            plist_file = [f for f in z.namelist() if f.endswith("Info.plist")]
             if not plist_file:
-                info["error"] = "Không tìm thấy Info.plist trong Payload/"
+                info["error"] = "Không tìm thấy Info.plist"
                 return info
 
             with z.open(plist_file[0]) as f:
@@ -92,14 +103,6 @@ def parse_ipa(file_path):
                 info["app_name"] = p.get("CFBundleDisplayName") or p.get("CFBundleName") or ""
                 info["bundle_id"] = p.get("CFBundleIdentifier") or ""
                 info["version"] = p.get("CFBundleShortVersionString") or ""
-
-            prov = [f for f in z.namelist() if f.endswith("embedded.mobileprovision")]
-            if prov:
-                c = z.read(prov[0]).decode("utf-8", errors="ignore")
-                n = re.search(r"<key>TeamName</key>\s*<string>(.*?)</string>", c)
-                i = re.search(r"<key>TeamIdentifier</key>\s*<array>\s*<string>(.*?)</string>", c)
-                info["team_name"] = n.group(1) if n else ""
-                info["team_id"] = i.group(1) if i else ""
     except Exception as e:
         info["error"] = f"Lỗi khi đọc IPA: {str(e)}"
     return info
@@ -127,7 +130,7 @@ def process_ipa(message, file_id, file_name):
 
     try:
         info = bot.get_file(file_id)
-        file = requests.get(f"https://api.telegram.org/file/bot{BOT_TOKEN}/{info.file_path}")
+        file = requests.get(f"https://api.telegram.org/file/bot{BOT_TOKEN}/{info.file_path}", timeout=120)
         with open(local, "wb") as f:
             f.write(file.content)
 
@@ -156,8 +159,7 @@ def process_ipa(message, file_id, file_name):
                 f"✅ <b>Upload hoàn tất!</b>\n\n"
                 f"📱 Ứng dụng: <b>{meta['app_name']}</b>\n"
                 f"🆔 Bundle: <code>{meta['bundle_id']}</code>\n"
-                f"🔢 Phiên bản: <b>{meta['version']}</b>\n"
-                f"👥 Team: <b>{meta['team_name']}</b> ({meta['team_id']})\n\n"
+                f"🔢 Phiên bản: <b>{meta['version']}</b>\n\n"
                 f"📦 <b>Tải IPA:</b>\n{ipa_url}\n\n"
                 f"📲 <b>Cài trực tiếp:</b>\n{short_link}"
             )
