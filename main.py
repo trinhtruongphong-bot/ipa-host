@@ -10,13 +10,13 @@ WEBHOOK_URL = "https://developed-hyena-trinhtruongphong-abb0500e.koyeb.app/"
 
 bot = telebot.TeleBot(BOT_TOKEN)
 
-# ========== GỬI TIN DÀI ==========
+# ========= GỬI TIN NHẮN DÀI =========
 def send_long_message(chat_id, text, parse_mode="HTML"):
     max_len = 4000
     for i in range(0, len(text), max_len):
         bot.send_message(chat_id, text[i:i+max_len], parse_mode=parse_mode, disable_web_page_preview=True)
 
-# ========== UPLOAD CHUẨN BASE64 ==========
+# ========= UPLOAD FILE LÊN GITHUB =========
 def upload_with_progress(chat_id, file_path, repo_path, message):
     headers = {"Authorization": f"token {GITHUB_TOKEN}"}
     url = f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/contents/{repo_path}"
@@ -40,7 +40,7 @@ def upload_with_progress(chat_id, file_path, repo_path, message):
     bot.edit_message_text(f"✅ Upload <b>{os.path.basename(file_path)}</b> hoàn tất!", chat_id, msg.message_id, parse_mode="HTML")
     return r.json()["content"]["path"]
 
-# ========== PHÂN TÍCH IPA ==========
+# ========= PHÂN TÍCH FILE IPA =========
 def parse_ipa(file_path):
     info = {"app_name": "Unknown", "bundle_id": "Unknown", "version": "Unknown", "team_name": "Unknown", "team_id": "Unknown"}
     with zipfile.ZipFile(file_path, 'r') as z:
@@ -60,7 +60,7 @@ def parse_ipa(file_path):
             info["team_id"] = i.group(1) if i else "Unknown"
     return info
 
-# ========== TẠO PLIST ==========
+# ========= TẠO FILE PLIST =========
 def generate_plist(ipa_url, info):
     return f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" 
@@ -73,14 +73,14 @@ def generate_plist(ipa_url, info):
 <key>kind</key><string>software</string><key>title</key><string>{info['app_name']}</string>
 </dict></dict></array></dict></plist>"""
 
-# ========== RÚT GỌN LINK ==========
+# ========= RÚT GỌN LINK =========
 def shorten(url):
     try:
         return requests.get("https://is.gd/create.php", params={"format": "simple", "url": url}).text.strip()
     except:
         return url
 
-# ========== XỬ LÝ FILE IPA ==========
+# ========= XỬ LÝ FILE IPA =========
 def process_ipa(message, file_id, file_name):
     chat_id = message.chat.id
     processing = bot.send_message(chat_id, f"📦 Đang xử lý <b>{file_name}</b>...", parse_mode="HTML")
@@ -109,9 +109,9 @@ def process_ipa(message, file_id, file_name):
         plist_url = f"https://raw.githubusercontent.com/{GITHUB_OWNER}/{GITHUB_REPO}/main/Plist/{plist_name}"
         short = shorten(f"itms-services://?action=download-manifest&url={plist_url}")
 
-        # Escape URL để không lỗi <a>
-        ipa_url_safe = html.escape(ipa_url)
-        short_safe = html.escape(short)
+        # Escape cực an toàn cho Telegram
+        ipa_url_safe = html.escape(ipa_url, quote=True)
+        short_safe = html.escape(short, quote=True)
 
         msg = (
             f"✅ <b>Upload hoàn tất!</b>\n\n"
@@ -119,8 +119,8 @@ def process_ipa(message, file_id, file_name):
             f"🆔 Bundle: <code>{meta['bundle_id']}</code>\n"
             f"🔢 Phiên bản: <b>{meta['version']}</b>\n"
             f"👥 Team: <b>{meta['team_name']}</b> ({meta['team_id']})\n\n"
-            f"📦 <a href='{ipa_url_safe}'>Tải IPA</a>\n"
-            f"📲 <a href='{short_safe}'>Cài trực tiếp</a>"
+            f"📦 <a href=\"{ipa_url_safe}\">Tải IPA</a>\n"
+            f"📲 <a href=\"{short_safe}\">Cài trực tiếp</a>"
         )
         send_long_message(chat_id, msg)
 
@@ -138,7 +138,7 @@ def process_ipa(message, file_id, file_name):
         if os.path.exists(local):
             os.remove(local)
 
-# ========== DANH SÁCH + XOÁ FILE ==========
+# ========= LỆNH DANH SÁCH & XOÁ =========
 @bot.message_handler(commands=["listipa", "listplist"])
 def list_files(m):
     folder = "iPA" if m.text == "/listipa" else "Plist"
@@ -165,7 +165,7 @@ def del_file(c):
     else:
         bot.edit_message_text(f"❌ Lỗi khi xoá <b>{html.escape(name)}</b>.", c.message.chat.id, c.message.message_id, parse_mode="HTML")
 
-# ========== LỆNH CƠ BẢN ==========
+# ========= LỆNH CƠ BẢN =========
 @bot.message_handler(content_types=["document"])
 def handle_file(m):
     threading.Thread(target=process_ipa, args=(m, m.document.file_id, m.document.file_name)).start()
@@ -174,7 +174,7 @@ def handle_file(m):
 def help_msg(m):
     bot.reply_to(m, "👋 Gửi file .ipa để upload.\n/listipa - Danh sách IPA\n/listplist - Danh sách Plist", parse_mode="HTML")
 
-# ========== FLASK WEBHOOK ==========
+# ========= FLASK WEBHOOK =========
 app = Flask(__name__)
 
 @app.route('/', methods=['POST'])
