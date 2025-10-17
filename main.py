@@ -24,17 +24,16 @@ def shorten(url):
         r = requests.get(f"https://is.gd/create.php?format=simple&url={encoded}", timeout=10)
         if r.status_code == 200:
             return r.text.strip()
-        else:
-            return url
     except:
-        return url
+        pass
+    return url
 
 # ========= UPLOAD FILE LÊN GITHUB =========
 def upload_with_progress(chat_id, file_path, repo_path, message):
     headers = {"Authorization": f"token {GITHUB_TOKEN}"}
     url = f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/contents/{repo_path}"
 
-    # 🔍 Kiểm tra nếu file đã tồn tại, lấy SHA để cập nhật
+    # 🔍 Kiểm tra nếu file đã tồn tại
     sha = None
     check = requests.get(url, headers=headers)
     if check.status_code == 200:
@@ -65,14 +64,7 @@ def upload_with_progress(chat_id, file_path, repo_path, message):
 
 # ========= PHÂN TÍCH FILE IPA =========
 def parse_ipa(file_path):
-    info = {
-        "app_name": "Unknown",
-        "bundle_id": "Unknown",
-        "version": "Unknown",
-        "team_name": "Unknown",
-        "team_id": "Unknown",
-        "error": None
-    }
+    info = {"app_name": "Unknown", "bundle_id": "Unknown", "version": "Unknown", "team_name": "Unknown", "team_id": "Unknown", "error": None}
     try:
         with zipfile.ZipFile(file_path, 'r') as z:
             plist_file = [f for f in z.namelist() if f.endswith("Info.plist") and "Payload/" in f]
@@ -85,7 +77,6 @@ def parse_ipa(file_path):
                 try:
                     p = plistlib.loads(data)
                 except Exception:
-                    # Nếu là binary -> chuyển sang XML
                     try:
                         with tempfile.NamedTemporaryFile(delete=False) as tmp:
                             tmp.write(data)
@@ -111,21 +102,22 @@ def parse_ipa(file_path):
                 info["team_id"] = i.group(1) if i else "Unknown"
     except Exception as e:
         info["error"] = f"Lỗi khi đọc IPA: {str(e)}"
-
     return info
 
-# ========= TẠO FILE PLIST =========
+# ========= TẠO FILE PLIST TỪ TEMPLATE =========
 def generate_plist(ipa_url, info):
-    return f"""<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" 
-"http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict><key>items</key><array><dict>
-<key>assets</key><array><dict><key>kind</key><string>software-package</string>
-<key>url</key><string>{ipa_url}</string></dict></array>
-<key>metadata</key><dict><key>bundle-identifier</key><string>{info['bundle_id']}</string>
-<key>bundle-version</key><string>{info['version']}</string>
-<key>kind</key><string>software</string><key>title</key><string>{info['app_name']}</string>
-</dict></dict></array></dict></plist>"""
+    try:
+        with open("template.plist", "r", encoding="utf-8") as tpl:
+            content = tpl.read()
+        content = (
+            content.replace("__IPA__", ipa_url)
+            .replace("__PACKAGE__", info["bundle_id"] or "unknown.bundle")
+            .replace("__VERSION__", info["version"] or "1.0")
+            .replace("__NAME__", info["app_name"] or "Unknown App")
+        )
+        return content
+    except Exception as e:
+        return f"❌ Không thể tạo plist: {str(e)}"
 
 # ========= XỬ LÝ FILE IPA =========
 def process_ipa(message, file_id, file_name):
@@ -187,8 +179,7 @@ def process_ipa(message, file_id, file_name):
 @bot.message_handler(commands=["listipa", "listplist"])
 def list_files(m):
     folder = "iPA" if m.text == "/listipa" else "Plist"
-    r = requests.get(f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/contents/{folder}",
-                     headers={"Authorization": f"token {GITHUB_TOKEN}"})
+    r = requests.get(f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/contents/{folder}", headers={"Authorization": f"token {GITHUB_TOKEN}"})
     if r.status_code != 200:
         return bot.reply_to(m, "❌ Không thể lấy danh sách.")
     files = [f for f in r.json() if f["name"].endswith(".ipa") or f["name"].endswith(".plist")]
@@ -209,7 +200,7 @@ def del_file(c):
     else:
         bot.edit_message_text(f"❌ Lỗi khi xoá <b>{html.escape(name)}</b>.", c.message.chat.id, c.message.message_id, parse_mode="HTML")
 
-# ========= LỆNH CƠ BẢN =========
+# ========= HANDLER =========
 @bot.message_handler(content_types=["document"])
 def handle_file(m):
     threading.Thread(target=process_ipa, args=(m, m.document.file_id, m.document.file_name)).start()
