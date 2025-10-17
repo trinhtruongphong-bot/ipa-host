@@ -12,15 +12,23 @@ WEBHOOK_URL = "https://developed-hyena-trinhtruongphong-abb0500e.koyeb.app/"
 
 bot = telebot.TeleBot(BOT_TOKEN)
 
-# ========= RÚT GỌN LINK BẰNG TRÌNH DUYỆT (TinyURL web form) =========
+# ========= RÚT GỌN LINK (mô phỏng TinyURL web form thật) =========
 def shorten(url):
     try:
-        # Mô phỏng việc gửi form như người dùng thật
-        res = requests.post("https://tinyurl.com/create.php", data={"url": url}, timeout=10)
-        # Lấy link tinyurl trong HTML trả về
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/118.0 Safari/537.36"
+            ),
+            "Content-Type": "application/x-www-form-urlencoded"
+        }
+        res = requests.post("https://tinyurl.com/create.php", data={"url": url}, headers=headers, timeout=10)
         match = re.search(r'(https://tinyurl\.com/[a-zA-Z0-9]+)', res.text)
         if match:
             return match.group(1)
+        else:
+            print("⚠️ Không tìm thấy link TinyURL trong phản hồi.")
     except Exception as e:
         print(f"❌ Lỗi shorten(): {e}")
     return url
