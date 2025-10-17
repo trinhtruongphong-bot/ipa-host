@@ -11,10 +11,10 @@ WEBHOOK_URL = "https://developed-hyena-trinhtruongphong-abb0500e.koyeb.app/"
 bot = telebot.TeleBot(BOT_TOKEN)
 
 # ========= GỬI TIN NHẮN DÀI =========
-def send_long_message(chat_id, text, parse_mode="HTML"):
+def send_long_message(chat_id, text, parse_mode="HTML", reply_markup=None):
     max_len = 4000
     for i in range(0, len(text), max_len):
-        bot.send_message(chat_id, text[i:i+max_len], parse_mode=parse_mode, disable_web_page_preview=True)
+        bot.send_message(chat_id, text[i:i+max_len], parse_mode=parse_mode, disable_web_page_preview=True, reply_markup=reply_markup if i == 0 else None)
 
 # ========= UPLOAD FILE LÊN GITHUB =========
 def upload_with_progress(chat_id, file_path, repo_path, message):
@@ -109,20 +109,21 @@ def process_ipa(message, file_id, file_name):
         plist_url = f"https://raw.githubusercontent.com/{GITHUB_OWNER}/{GITHUB_REPO}/main/Plist/{plist_name}"
         short = shorten(f"itms-services://?action=download-manifest&url={plist_url}")
 
-        # Escape cực an toàn cho Telegram
-        ipa_url_safe = html.escape(ipa_url, quote=True)
-        short_safe = html.escape(short, quote=True)
-
         msg = (
             f"✅ <b>Upload hoàn tất!</b>\n\n"
             f"📱 Ứng dụng: <b>{meta['app_name']}</b>\n"
             f"🆔 Bundle: <code>{meta['bundle_id']}</code>\n"
             f"🔢 Phiên bản: <b>{meta['version']}</b>\n"
-            f"👥 Team: <b>{meta['team_name']}</b> ({meta['team_id']})\n\n"
-            f"📦 <a href=\"{ipa_url_safe}\">Tải IPA</a>\n"
-            f"📲 <a href=\"{short_safe}\">Cài trực tiếp</a>"
+            f"👥 Team: <b>{meta['team_name']}</b> ({meta['team_id']})"
         )
-        send_long_message(chat_id, msg)
+
+        kb = telebot.types.InlineKeyboardMarkup()
+        kb.add(
+            telebot.types.InlineKeyboardButton("📦 Tải IPA", url=ipa_url),
+            telebot.types.InlineKeyboardButton("📲 Cài trực tiếp", url=short)
+        )
+
+        send_long_message(chat_id, msg, reply_markup=kb)
 
     except Exception as e:
         err_text = str(e)
@@ -138,7 +139,7 @@ def process_ipa(message, file_id, file_name):
         if os.path.exists(local):
             os.remove(local)
 
-# ========= LỆNH DANH SÁCH & XOÁ =========
+# ========= DANH SÁCH & XOÁ =========
 @bot.message_handler(commands=["listipa", "listplist"])
 def list_files(m):
     folder = "iPA" if m.text == "/listipa" else "Plist"
