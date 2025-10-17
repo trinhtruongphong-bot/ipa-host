@@ -33,7 +33,6 @@ def upload_with_progress(chat_id, file_path, repo_path, message):
     headers = {"Authorization": f"token {GITHUB_TOKEN}"}
     url = f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/contents/{repo_path}"
 
-    # Kiểm tra file đã tồn tại chưa
     sha = None
     check = requests.get(url, headers=headers)
     if check.status_code == 200:
@@ -49,13 +48,12 @@ def upload_with_progress(chat_id, file_path, repo_path, message):
             bot.edit_message_text(f"📤 Đang upload <b>{os.path.basename(file_path)}</b>... {p}%", chat_id, msg.message_id, parse_mode="HTML")
         except:
             pass
-        time.sleep(0.2)
+        time.sleep(0.25)
 
     data = {"message": message, "content": content_b64}
     if sha:
         data["sha"] = sha
 
-    # Thử lại 3 lần nếu mất kết nối
     for attempt in range(3):
         try:
             r = requests.put(url, headers=headers, json=data, timeout=120)
@@ -73,14 +71,18 @@ def upload_with_progress(chat_id, file_path, repo_path, message):
     bot.edit_message_text(f"✅ Upload <b>{os.path.basename(file_path)}</b> hoàn tất!", chat_id, msg.message_id, parse_mode="HTML")
     return r.json()["content"]["path"]
 
-# ========= PHÂN TÍCH FILE IPA (chỉ đọc Info.plist) =========
+# ========= PHÂN TÍCH FILE IPA (chỉ lấy Info.plist trong .app) =========
 def parse_ipa(file_path):
     info = {"app_name": "", "bundle_id": "", "version": "", "error": None}
     try:
         with zipfile.ZipFile(file_path, 'r') as z:
-            plist_file = [f for f in z.namelist() if f.endswith("Info.plist")]
+            # 🔍 Chỉ chọn Info.plist trong thư mục .app
+            plist_file = [
+                f for f in z.namelist()
+                if f.endswith("Info.plist") and ".app/" in f and "Payload/" in f
+            ]
             if not plist_file:
-                info["error"] = "Không tìm thấy Info.plist"
+                info["error"] = "Không tìm thấy Info.plist trong .app"
                 return info
 
             with z.open(plist_file[0]) as f:
@@ -107,7 +109,7 @@ def parse_ipa(file_path):
         info["error"] = f"Lỗi khi đọc IPA: {str(e)}"
     return info
 
-# ========= TẠO FILE PLIST TỪ TEMPLATE =========
+# ========= TẠO FILE PLIST =========
 def generate_plist(ipa_url, info):
     try:
         with open("template.plist", "r", encoding="utf-8") as tpl:
@@ -202,7 +204,7 @@ def del_file(c):
     else:
         bot.edit_message_text(f"❌ Lỗi khi xoá <b>{html.escape(name)}</b>.", c.message.chat.id, c.message.message_id, parse_mode="HTML")
 
-# ========= HANDLER =========
+# ========= COMMAND =========
 @bot.message_handler(content_types=["document"])
 def handle_file(m):
     threading.Thread(target=process_ipa, args=(m, m.document.file_id, m.document.file_name)).start()
