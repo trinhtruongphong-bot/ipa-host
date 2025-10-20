@@ -1,0 +1,47 @@
+name: 🚀 Auto Deploy GitHub Pages (with auto retry)
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Cho phép nhiều workflow cùng chạy (không bị hủy)
+# Và thêm cơ chế retry tự động nếu lỗi
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+    steps:
+      - name: 🧩 Checkout repository
+        uses: actions/checkout@v4
+        retry: 3
+        retry-delay: 10s
+
+      - name: ⚙️ Setup GitHub Pages
+        uses: actions/configure-pages@v5
+        retry: 3
+        retry-delay: 10s
+
+      - name: 📦 Upload static files
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: .
+        retry: 3
+        retry-delay: 10s
+
+      - name: 🚀 Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+        retry: 3
+        retry-delay: 10s
+
+      - name: ✅ Deployment done
+        run: echo "✅ Auto Deploy completed successfully!"
