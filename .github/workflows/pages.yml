@@ -1,4 +1,4 @@
-name: 🚀 Auto Deploy GitHub Pages (Full Auto Fix)
+name: 🚀 Auto Deploy GitHub Pages (Full Auto Fix v2)
 
 on:
   push:
@@ -13,6 +13,8 @@ permissions:
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
+    environment:
+      name: github-pages
     timeout-minutes: 15
     strategy:
       fail-fast: false
@@ -33,14 +35,18 @@ jobs:
       - name: 🚀 Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: ✅ Deployment successful
         if: success()
-        run: echo "✅ All IPA files deployed successfully!"
+        run: echo "✅ All IPA and PLIST files deployed successfully!"
 
       - name: 🔁 Auto retry on failure
         if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          echo "❌ Deployment failed, retrying..."
+          echo "❌ Deployment failed, retrying in 10s..."
           sleep 10
-          gh workflow run pages.yml
+          gh workflow run pages.yml --ref main || echo "⚠️ Retry failed again."
